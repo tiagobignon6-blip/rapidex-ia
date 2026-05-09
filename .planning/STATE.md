@@ -1,3 +1,16 @@
+---
+gsd_state_version: 1.0
+milestone: v2.5
+milestone_name: milestone
+status: unknown
+last_updated: "2026-05-09T20:36:54.818Z"
+progress:
+  total_phases: 12
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+---
+
 # State: RAPIDEX IA
 
 **Milestone:** v2.5 — Polish + Vertical + Multi-Deploy

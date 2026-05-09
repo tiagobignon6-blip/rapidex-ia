@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "_comment": "Operator fills url + sha256 + bytes_expected during pod swap (see infra/runpod/SWAP-PROCEDURE.md). dest_path is relative to RAPIDEX_MODELS_DIR.",
+  "models": [
+    {
+      "name": "whisperx-large-v3",
+      "url": "TODO",
+      "dest_path": "whisperx/large-v3.bin",
+      "sha256": "TODO",
+      "bytes_expected": 0
+    },
+    {
+      "name": "fish-speech-v1.5",
+      "url": "TODO",
+      "dest_path": "fish-speech/v1.5.safetensors",
+      "sha256": "TODO",
+      "bytes_expected": 0
+    },
+    {
+      "name": "musetalk",
+      "url": "TODO",
+      "dest_path": "musetalk/musetalk.pth",
+      "sha256": "TODO",
+      "bytes_expected": 0
+    },
+    {
+      "name": "wav2lip",
+      "url": "TODO",
+      "dest_path": "wav2lip/wav2lip.pth",
+      "sha256": "TODO",
+      "bytes_expected": 0
+    },
+    {
+      "name": "demucs-htdemucs",
+      "url": "TODO",
+      "dest_path": "demucs/htdemucs.th",
+      "sha256": "TODO",
+      "bytes_expected": 0
+    }
+  ]
+}

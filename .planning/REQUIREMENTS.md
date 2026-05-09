@@ -85,37 +85,35 @@ Explicit exclusions. Documented to prevent scope creep and re-asking.
 
 ## Traceability
 
-Empty initially. Populated during roadmap creation in the next step.
-
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| INFRA-01 | TBD | Pending |
-| INFRA-02 | TBD | Pending |
-| INFRA-03 | TBD | Pending |
-| INFRA-04 | TBD | Pending |
-| INFRA-05 | TBD | Pending |
-| UI-01 | TBD | Pending |
-| UI-02 | TBD | Pending |
-| VIDEO-01 | TBD | Pending |
-| VIDEO-02 | TBD | Pending |
-| VIDEO-03 | TBD | Pending |
-| VIDEO-04 | TBD | Pending |
-| VIDEO-05 | TBD | Pending |
-| TEST-01 | TBD | Pending |
-| TEST-02 | TBD | Pending |
-| TEST-03 | TBD | Pending |
-| TEST-04 | TBD | Pending |
-| TEST-05 | TBD | Pending |
-| DEPLOY-01 | TBD | Pending |
-| DEPLOY-02 | TBD | Pending |
-| DEPLOY-03 | TBD | Pending |
-| DEPLOY-04 | TBD | Pending |
-| DEPLOY-05 | TBD | Pending |
+| INFRA-01 | Phase 1 — Repo Restructure & Foundations | Pending |
+| INFRA-02 | Phase 1 — Repo Restructure & Foundations | Pending |
+| INFRA-03 | Phase 1 — Repo Restructure & Foundations | Pending |
+| INFRA-04 | Phase 1 — Repo Restructure & Foundations | Pending |
+| INFRA-05 | Phase 2 — Rename app.py.py → app.py | Pending |
+| UI-01 | Phase 4 — Logo in Header | Pending |
+| UI-02 | Phase 3 — Theme Tokens Extraction | Pending |
+| VIDEO-01 | Phase 5 — Aspect-Ratio Module Foundation | Pending |
+| VIDEO-02 | Phase 5 — Aspect-Ratio Module Foundation | Pending |
+| VIDEO-03 | Phase 6 — 9:16 Vertical Support | Pending |
+| VIDEO-04 | Phase 7 — 1:1 Square Support | Pending |
+| VIDEO-05 | Phase 5 — Aspect-Ratio Module Foundation | Pending |
+| TEST-01 | Phase 8 — Unit Test Harness | Pending |
+| TEST-02 | Phase 9 — Integration Test Harness | Pending |
+| TEST-03 | Phase 9 — Integration Test Harness | Pending |
+| TEST-04 | Phase 8 — Unit Test Harness | Pending |
+| TEST-05 | Phase 8 — Unit Test Harness | Pending |
+| DEPLOY-01 | Phase 10 — HF Spaces Dockerfile & Env | Pending |
+| DEPLOY-02 | Phase 11 — HF Spaces Model Persistence | Pending |
+| DEPLOY-03 | Phase 10 — HF Spaces Dockerfile & Env | Pending |
+| DEPLOY-04 | Phase 12 — HF Spaces Smoke + E2E Validation | Pending |
+| DEPLOY-05 | Phase 12 — HF Spaces Smoke + E2E Validation | Pending |
 
 **Coverage:**
 - v1 requirements: 22 total
-- Mapped to phases: 0 (will be filled by roadmapper)
-- Unmapped: 22 ⚠️ (expected at this stage — roadmap will resolve)
+- Mapped to phases: 22
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-05-09*

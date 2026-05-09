@@ -35,7 +35,8 @@ Video → extract audio → Demucs (vocals + bg) → WhisperX(vocals)
 
 ## Operational commands
 
-- Start app each new session: `bash /workspace/startup.sh`
+- Start app each new session: `bash /workspace/startup.sh` (legacy path, until pod swap completes)
+- After pod swap: `bash /workspace-v3/infra/runpod/startup.sh` (see `infra/runpod/SWAP-PROCEDURE.md`)
 
 ## UI / Design system (v2)
 

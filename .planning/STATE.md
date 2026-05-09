@@ -22,13 +22,13 @@ See: `.planning/PROJECT.md` (updated 2026-05-09)
 
 **Core value:** A creator drops a video in, edits the translated script, and walks out with a lip-synced dubbed version — without ever touching the underlying ML pipeline.
 
-**Current focus:** Phase 1 — Repo Restructure & Foundations
+**Current focus:** Phase 1 — Repo Restructure & Foundations (repo-side complete; pod-side pending operator)
 
 ## Position
 
 | Phase | Status |
 |---|---|
-| Phase 1 — Repo Restructure & Foundations | Not Started |
+| Phase 1 — Repo Restructure & Foundations | In Progress (repo scaffold ✓ · pod swap pending — see `infra/runpod/SWAP-PROCEDURE.md`) |
 | Phase 2 — Rename app.py.py → app.py | Not Started |
 | Phase 3 — Theme Tokens Extraction | Not Started |
 | Phase 4 — Logo in Header | Not Started |
@@ -55,10 +55,12 @@ See: `.planning/PROJECT.md` (updated 2026-05-09)
 
 ## Open Blockers / Concerns
 
-(None.)
+- **Pod-side execution of Phase 1** is paused awaiting operator action — see `infra/runpod/SWAP-PROCEDURE.md` (10 steps + rollback). Phase 2 (`app.py.py` → `app.py` rename + import rewire) cannot start until the pod swap is validated.
+- **API rate-limit**: sub-agents hit the Anthropic limit during research (reset 2026-05-10 ~08:40 UTC). Phase 1 plan + execution were done inline. Subsequent phases can resume sub-agent dispatch after reset.
 
 ## Next Action
 
-Run `/gsd-discuss-phase 1` to gather implementation decisions for **Phase 1 — Repo Restructure & Foundations**, then `/gsd-plan-phase 1` to produce the executable plan.
+After the operator completes the pod swap (10 steps in `SWAP-PROCEDURE.md`):
+- Run `/gsd-plan-phase 2` to produce the Phase 2 plan (`app.py.py` → `app.py` rename + import rewire).
 
-In autonomous mode, this happens automatically as the workflow advances.
+If the operator has not yet started: nothing to do here; the repo-side scaffold is committed and pushed on `claude/add-claude-skills-rmINY`.

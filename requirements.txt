@@ -1,0 +1,18 @@
+# RAPIDEX IA — supporting deps (Phase 1 scaffold).
+# Locked ML pins (whisperx, fish-speech, demucs, deep-translator, torch matrix
+# for MuseTalk) are added by the pod operator during step 4 of
+# infra/runpod/SWAP-PROCEDURE.md, sourced from the live pod's `pip freeze`.
+
+# UI
+gradio>=4.44,<5
+gradio_client
+
+# Video / audio I/O
+ffmpeg-python>=0.2.0
+Pillow>=10.4
+
+# HF model fetching (used in Phase 11 for HF Spaces; safe to install now)
+huggingface_hub>=0.25
+
+# Local config
+python-dotenv>=1.0

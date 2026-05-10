@@ -34,6 +34,7 @@ def run_demucs(raw_audio, out_dir):
 
 
 def run_whisperx(vocals_path, lang_code):
+    """Retorna (texto, lang_detectado)."""
     import whisperx, torch
     device  = "cuda" if torch.cuda.is_available() else "cpu"
     compute = "float16" if device == "cuda" else "int8"
@@ -43,31 +44,98 @@ def run_whisperx(vocals_path, lang_code):
     )
     audio  = whisperx.load_audio(vocals_path)
     result = model.transcribe(audio, batch_size=16)
+    detected = result.get("language", lang_code if lang_code != "auto" else "en")
     try:
-        lc = result.get("language", lang_code)
-        am, meta = whisperx.load_align_model(language_code=lc, device=device)
+        am, meta = whisperx.load_align_model(language_code=detected, device=device)
         result   = whisperx.align(result["segments"], am, meta, audio, device)
     except Exception:
         pass
-    return " ".join(s["text"].strip() for s in result["segments"])
+    text = " ".join(s["text"].strip() for s in result["segments"])
+    return text, detected
 
 
 def translate_text(text, source_code, target_code):
     from deep_translator import GoogleTranslator
-    return GoogleTranslator(source=source_code, target=target_code).translate(text)
+    src = source_code if source_code and source_code != "auto" else "auto"
+    return GoogleTranslator(source=src, target=target_code).translate(text)
+
+
+FISH_SPEECH_DIR = "/workspace/fish-speech"
+FISH_SPEECH_CKPT = "/workspace/fish-speech/checkpoints/fish-speech-1.5"
+FISH_SPEECH_VQGAN = "/workspace/fish-speech/checkpoints/firefly-gan-vq-fsq-8x1024-21hz-generator.pth"
+
+
+def _ref_text_from_audio(ref_wav):
+    """Transcreve o áudio de referência (curto) para passar como prompt-text ao Fish Speech."""
+    try:
+        import whisperx, torch
+        device  = "cuda" if torch.cuda.is_available() else "cpu"
+        compute = "float16" if device == "cuda" else "int8"
+        model   = whisperx.load_model("large-v3", device, compute_type=compute)
+        audio   = whisperx.load_audio(ref_wav)
+        result  = model.transcribe(audio, batch_size=16)
+        return " ".join(s["text"].strip() for s in result["segments"])[:300]
+    except Exception:
+        return ""
 
 
 def run_fish_speech(text, ref_wav, out_dir):
+    """Pipeline Fish Speech V1.5:
+       1) tools.vqgan.inference -> codebook do áudio de referência
+       2) tools.llama.generate  -> tokens semânticos do texto alvo
+       3) tools.vqgan.inference -> wav final
+    """
     dubbed = os.path.join(out_dir, "dubbed_voice.wav")
-    r = subprocess.run([
-        "python", "-m", "fish_speech.inference",
+    ref_codes = os.path.join(out_dir, "ref.npy")
+    out_codes = os.path.join(out_dir, "codes_0.npy")
+
+    # Etapa 1: extrai código VQ do áudio de referência
+    r1 = subprocess.run([
+        "python", "tools/vqgan/inference.py",
+        "-i", ref_wav,
+        "-o", ref_codes,
+        "--checkpoint-path", FISH_SPEECH_VQGAN,
+    ], capture_output=True, text=True, cwd=FISH_SPEECH_DIR)
+    if r1.returncode != 0 or not os.path.exists(ref_codes):
+        raise RuntimeError(
+            "Fish Speech (VQGAN encode) falhou.\n"
+            f"STDOUT: {r1.stdout[-500:]}\nSTDERR: {r1.stderr[-1000:]}"
+        )
+
+    # Etapa 2: gera tokens semânticos a partir do texto alvo
+    prompt_text = _ref_text_from_audio(ref_wav)
+    cmd_llama = [
+        "python", "tools/llama/generate.py",
         "--text", text,
-        "--reference-audio", ref_wav,
-        "--output", dubbed,
-        "--device", "cuda"
-    ], capture_output=True, text=True)
-    if not os.path.exists(dubbed):
-        raise RuntimeError(f"Fish Speech falhou:\n{r.stderr}")
+        "--prompt-tokens", ref_codes,
+        "--checkpoint-path", FISH_SPEECH_CKPT,
+        "--num-samples", "1",
+        "--compile",
+    ]
+    if prompt_text:
+        cmd_llama += ["--prompt-text", prompt_text]
+    r2 = subprocess.run(cmd_llama, capture_output=True, text=True, cwd=FISH_SPEECH_DIR)
+    # generate.py escreve em ./codes_0.npy no cwd
+    generated_codes = os.path.join(FISH_SPEECH_DIR, "codes_0.npy")
+    if r2.returncode != 0 or not os.path.exists(generated_codes):
+        raise RuntimeError(
+            "Fish Speech (LLaMA generate) falhou.\n"
+            f"STDOUT: {r2.stdout[-500:]}\nSTDERR: {r2.stderr[-1000:]}"
+        )
+    shutil.move(generated_codes, out_codes)
+
+    # Etapa 3: decodifica tokens em wav
+    r3 = subprocess.run([
+        "python", "tools/vqgan/inference.py",
+        "-i", out_codes,
+        "-o", dubbed,
+        "--checkpoint-path", FISH_SPEECH_VQGAN,
+    ], capture_output=True, text=True, cwd=FISH_SPEECH_DIR)
+    if r3.returncode != 0 or not os.path.exists(dubbed):
+        raise RuntimeError(
+            "Fish Speech (VQGAN decode) falhou.\n"
+            f"STDOUT: {r3.stdout[-500:]}\nSTDERR: {r3.stderr[-1000:]}"
+        )
     return dubbed
 
 
@@ -83,24 +151,58 @@ def mix_audio(dubbed, bgmusic, out_dir):
 
 
 def run_lipsync(video, audio, out_dir):
+    """MuseTalk v1.5 com fallback para Wav2Lip.
+    MuseTalk exige config YAML (não aceita flags --video_path/--audio_path direto).
+    """
     output = os.path.join(out_dir, "rapidex_output.mp4")
     musetalk = "/workspace/MuseTalk"
+
+    # Gera YAML temporário com a tarefa
+    cfg_path = os.path.join(out_dir, "musetalk_cfg.yaml")
+    result_dir = os.path.join(out_dir, "musetalk_results")
+    os.makedirs(result_dir, exist_ok=True)
+    with open(cfg_path, "w") as f:
+        f.write(
+            f"task_0:\n"
+            f"  video_path: \"{video}\"\n"
+            f"  audio_path: \"{audio}\"\n"
+            f"  bbox_shift: 0\n"
+        )
+
     r = subprocess.run([
-        "python", f"{musetalk}/scripts/inference.py",
-        "--video_path", video, "--audio_path", audio,
-        "--output_path", output, "--bbox_shift", "0"
+        "python", "-m", "scripts.inference",
+        "--inference_config", cfg_path,
+        "--result_dir", result_dir,
+        "--unet_model_path", f"{musetalk}/models/musetalk/pytorch_model.bin",
+        "--unet_config", f"{musetalk}/models/musetalk/musetalk.json",
+        "--version", "v15",
     ], capture_output=True, text=True, cwd=musetalk)
-    if os.path.exists(output):
-        return output
-    # fallback Wav2Lip
+
+    # Procura o mp4 gerado em result_dir
+    if r.returncode == 0:
+        for root, _, files in os.walk(result_dir):
+            for fn in files:
+                if fn.endswith(".mp4"):
+                    shutil.copy(os.path.join(root, fn), output)
+                    return output
+
+    print(f"[MuseTalk falhou, tentando Wav2Lip]\nSTDERR: {r.stderr[-800:]}")
+
+    # Fallback Wav2Lip
     wav2lip = "/workspace/Wav2Lip"
-    subprocess.run([
-        "python", f"{wav2lip}/inference.py",
+    r2 = subprocess.run([
+        "python", "inference.py",
         "--checkpoint_path", f"{wav2lip}/checkpoints/wav2lip_gan.pth",
         "--face", video, "--audio", audio,
         "--outfile", output,
         "--pads", "0", "10", "0", "0", "--resize_factor", "1"
-    ], check=True, capture_output=True, cwd=wav2lip)
+    ], capture_output=True, text=True, cwd=wav2lip)
+    if r2.returncode != 0 or not os.path.exists(output):
+        raise RuntimeError(
+            "MuseTalk e Wav2Lip falharam.\n"
+            f"MuseTalk STDERR: {r.stderr[-500:]}\n"
+            f"Wav2Lip STDERR: {r2.stderr[-500:]}"
+        )
     return output
 
 
@@ -122,13 +224,15 @@ def step_transcribe(video, source_lang, target_lang, progress=gr.Progress(track_
         _S["vocals"] = vocals
         _S["bg"]     = bg
         progress(0.55, desc="Transcrevendo...")
-        original = run_whisperx(vocals, src)
+        original, detected = run_whisperx(vocals, src)
+        _S["lang_detected"] = detected
         progress(0.80, desc="Traduzindo...")
-        translated = translate_text(original, src, tgt)
+        translated = translate_text(original, detected, tgt)
         progress(1.00, desc="Pronto!")
-        return original, translated, "✅ Transcrição concluída — edite o texto se quiser e clique em Dublar"
+        return original, translated, f"✅ Transcrição concluída (detectado: {detected}) — edite e clique em Dublar"
     except Exception as e:
         shutil.rmtree(tmp, ignore_errors=True)
+        _S.clear()
         raise gr.Error(str(e))
 
 
@@ -157,9 +261,12 @@ def step_dub(translated_text, use_lipsync, ref_audio, progress=gr.Progress(track
         progress(0.95, desc="Finalizando...")
         final = f"/workspace/output_{int(time.time())}.mp4"
         shutil.copy(out, final)
-        return out, "✅ Dublagem concluída!"
+        return final, "✅ Dublagem concluída!"
     except Exception as e:
         raise gr.Error(str(e))
+    finally:
+        # mantém os arquivos por enquanto; cleanup só após sessão fechar
+        pass
 
 
 # ─────────────────────────────────────────

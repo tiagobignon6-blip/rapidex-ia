@@ -22,7 +22,7 @@ See: `.planning/PROJECT.md` (updated 2026-05-09)
 
 **Core value:** A creator drops a video in, edits the translated script, and walks out with a lip-synced dubbed version — without ever touching the underlying ML pipeline.
 
-**Current focus:** Phase 2.5 — Local Runtime Profile (new; unblocks downstream work without RunPod minutes)
+**Current focus:** Phase 2.5 operator verification (Compose smoke on WSL2+GPU + RunPod no-regression on next pod boot), then Phase 3 (Theme Tokens — runnable from the laptop).
 
 ## Position
 
@@ -30,8 +30,8 @@ See: `.planning/PROJECT.md` (updated 2026-05-09)
 |---|---|
 | Phase 1 — Repo Restructure & Foundations | Repo-side ✓ · pod swap **deferred** (operator runbook `infra/runpod/SWAP-PROCEDURE.md` still valid; not blocking) |
 | Phase 2 — Rename app.py.py → app.py | ✅ Done (commit `f6f93bd`, 2026-05-12) |
-| Phase 2.5 — Local Runtime Profile | In Progress (planning) |
-| Phase 3 — Theme Tokens Extraction | Not Started |
+| Phase 2.5 — Local Runtime Profile | Repo-side ✓ (16 commits, 2026-05-12) · operator-side `human_needed` (Compose smoke + 1 pod boot for no-regression — see `.planning/phases/02-5-local-runtime/01-VERIFICATION.md`) |
+| Phase 3 — Theme Tokens Extraction | Not Started (now unblocked — runnable from the laptop) |
 | Phase 4 — Logo in Header | Not Started |
 | Phase 5 — Aspect-Ratio Module Foundation | Not Started |
 | Phase 6 — 9:16 Vertical Support | Not Started |
@@ -65,4 +65,6 @@ See: `.planning/PROJECT.md` (updated 2026-05-09)
 
 ## Next Action
 
-Execute Phase 2.5 — Local Runtime Profile (see `.planning/phases/02-5-local-runtime/01-PLAN.md`).
+1. Operator: `cp .env.example .env`, then `docker compose -f infra/local/docker-compose.yml up --build`. On first successful boot, paste observed SHA256s into `scripts/models.manifest.json` and commit (`INFRA-06: lock model SHAs after first verified fetch`).
+2. Operator: on next RunPod session, run `bash /workspace/startup.sh` and confirm no-regression — UI and full pipeline still work as v2.
+3. After both pass, run `/gsd-verify-work 2.5` from a fresh session to flip Phase 2.5 status from `human_needed` to `passed` and unblock Phase 3 (Theme Tokens Extraction — runnable from the laptop).

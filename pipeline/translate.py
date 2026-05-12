@@ -1,3 +1,8 @@
-"""deep-translator (GoogleTranslator) wrapper with batching + retry."""
+"""deep-translator (GoogleTranslator) wrapper."""
 
-# TODO(phase-2+): port from /workspace/ on the pod.
+from __future__ import annotations
+
+
+def translate_text(text: str, source_code: str, target_code: str) -> str:
+    from deep_translator import GoogleTranslator
+    return GoogleTranslator(source=source_code, target=target_code).translate(text)

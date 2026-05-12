@@ -14,15 +14,11 @@ from pipeline.runtime import (
 from pipeline.audio import extract_audio, mix_audio
 from pipeline.separator import run_demucs
 from pipeline.transcribe import run_whisperx
+from pipeline.translate import translate_text
 
 # ─────────────────────────────────────────
 #  PIPELINE FUNCTIONS
 # ─────────────────────────────────────────
-
-def translate_text(text, source_code, target_code):
-    from deep_translator import GoogleTranslator
-    return GoogleTranslator(source=source_code, target=target_code).translate(text)
-
 
 def run_fish_speech(text, ref_wav, out_dir):
     device = detect_device()

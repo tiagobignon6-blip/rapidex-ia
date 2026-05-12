@@ -25,18 +25,30 @@ Video → extract audio → Demucs (vocals + bg) → WhisperX(vocals)
       → MuseTalk → final video
 ```
 
-## Workspace layout (RunPod pod)
+## Runtime layouts
 
-- `/workspace/app.py` and `/workspace/app.py.py` — same file (Windows naming bug; `app.py.py` is what's in the repo)
+### RunPod pod (production, legacy + post-swap)
+- `/workspace/app.py` — currently running v2 (legacy path)
 - `/workspace/startup.sh` — boots the app and prints `gradio.live` URL
-- `/workspace/Wav2Lip/` — fallback lipsync
-- `/workspace/MuseTalk/` — primary lipsync (models pre-downloaded)
-- `/workspace/fish-speech/` — TTS
+- `/workspace/{MuseTalk,Wav2Lip,fish-speech}/` — model dirs (pre-downloaded)
+- Post-swap (Phase 1 D-04): `/workspace-v3/infra/runpod/startup.sh` is the canonical entrypoint. Swap is deferred — runbook still valid in `infra/runpod/SWAP-PROCEDURE.md`.
+
+### Local dev (WSL2 + NVIDIA GPU — Phase 2.5)
+- `infra/local/start.sh` — bootstraps env, fetches models via `scripts/download_models.py`, launches `app.py` on `localhost:7860`
+- `infra/local/docker-compose.yml` — single-service `--gpus all` mode mounting `./models` and `./outputs`
+- Env-driven paths: `MUSETALK_DIR`, `WAV2LIP_DIR`, `FISH_SPEECH_DIR`, `RAPIDEX_MODELS_DIR`, `RAPIDEX_OUTPUTS_DIR`, `RAPIDEX_DEVICE`
+
+### HF Spaces (planned — Phase 10)
+- `infra/hfspaces/Dockerfile` — shares ~90% with `infra/local/Dockerfile`; differs in `HF_HOME=/data/.cache/huggingface` + `GRADIO_SHARE=false`.
 
 ## Operational commands
 
-- Start app each new session: `bash /workspace/startup.sh` (legacy path, until pod swap completes)
-- After pod swap: `bash /workspace-v3/infra/runpod/startup.sh` (see `infra/runpod/SWAP-PROCEDURE.md`)
+| Where | Command |
+|---|---|
+| Local (Compose) | `docker compose -f infra/local/docker-compose.yml up` |
+| Local (bare WSL2+CUDA) | `bash infra/local/start.sh` |
+| RunPod (legacy) | `bash /workspace/startup.sh` |
+| RunPod (post-swap) | `bash /workspace-v3/infra/runpod/startup.sh` |
 
 ## UI / Design system (v2)
 
@@ -51,7 +63,8 @@ Video → extract audio → Demucs (vocals + bg) → WhisperX(vocals)
 
 ## Open backlog
 
-- [ ] Rename `app.py.py` → `app.py` on GitHub
+- [x] Rename `app.py.py` → `app.py` (commit `f6f93bd`, Phase 2)
+- [ ] Local runtime profile — env-driven paths + device autodetect + `infra/local/` Compose (Phase 2.5)
 - [ ] Add RAPIDEX IA logo to header (`ChatGPT_Image_8_de_mai__de_2026__01_19_21.png`)
 - [ ] 9:16 support (Reels / TikTok)
 - [ ] End-to-end test with real video

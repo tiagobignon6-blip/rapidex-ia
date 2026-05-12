@@ -13,7 +13,9 @@ Requirements for the next milestone (post-v2 polish + structural de-risking). Ea
 - [ ] **INFRA-02**: Model weight files (`.pth`, `.ckpt`, `.safetensors`, `.bin`) are excluded from git via `.gitignore`; cloning the repo never pulls multi-GB blobs.
 - [ ] **INFRA-03**: A `scripts/download_models.py` script idempotently fetches all required model weights on first boot and skips on subsequent boots.
 - [ ] **INFRA-04**: The RunPod startup path swaps to the new repo layout atomically — old `/workspace/` stays as fallback until validated; zero in-flight user sessions are interrupted.
-- [ ] **INFRA-05**: The repo entrypoint is `app.py` (not `app.py.py`); the legacy `app.py.py` is removed and all references (startup scripts, docs) are updated.
+- [x] **INFRA-05**: The repo entrypoint is `app.py` (not `app.py.py`); the legacy `app.py.py` is removed and all references (startup scripts, docs) are updated. _Done: commit `f6f93bd` (Phase 2)._
+- [ ] **INFRA-06**: The same `app.py` boots on RunPod, HF Spaces, and the operator's local WSL2+CUDA machine, driven entirely by env vars (`RAPIDEX_MODELS_DIR`, `RAPIDEX_OUTPUTS_DIR`, `MUSETALK_DIR`, `WAV2LIP_DIR`, `FISH_SPEECH_DIR`, `GRADIO_SERVER_NAME`, `GRADIO_SHARE`, `RAPIDEX_DEVICE`). No hardcoded `/workspace/...` paths remain in `app.py` or pipeline modules. A local Compose recipe (`infra/local/docker-compose.yml`) brings up the full pipeline on `localhost:7860`.
+- [ ] **INFRA-07**: Device selection is auto-detected (`cuda` → `mps` → `cpu`) with an env override (`RAPIDEX_DEVICE`). `whisperx` + `fish_speech` consume the detected device; CPU fallback boots the UI even when CUDA is unavailable (GPU-only stages raise a clear user-facing error rather than crashing on import).
 
 ### UI
 
@@ -91,7 +93,9 @@ Explicit exclusions. Documented to prevent scope creep and re-asking.
 | INFRA-02 | Phase 1 — Repo Restructure & Foundations | Pending |
 | INFRA-03 | Phase 1 — Repo Restructure & Foundations | Pending |
 | INFRA-04 | Phase 1 — Repo Restructure & Foundations | Pending |
-| INFRA-05 | Phase 2 — Rename app.py.py → app.py | Pending |
+| INFRA-05 | Phase 2 — Rename app.py.py → app.py | ✅ Done (`f6f93bd`) |
+| INFRA-06 | Phase 2.5 — Local Runtime Profile | Pending |
+| INFRA-07 | Phase 2.5 — Local Runtime Profile | Pending |
 | UI-01 | Phase 4 — Logo in Header | Pending |
 | UI-02 | Phase 3 — Theme Tokens Extraction | Pending |
 | VIDEO-01 | Phase 5 — Aspect-Ratio Module Foundation | Pending |
@@ -111,8 +115,8 @@ Explicit exclusions. Documented to prevent scope creep and re-asking.
 | DEPLOY-05 | Phase 12 — HF Spaces Smoke + E2E Validation | Pending |
 
 **Coverage:**
-- v1 requirements: 22 total
-- Mapped to phases: 22
+- v1 requirements: 24 total (22 original + INFRA-06, INFRA-07)
+- Mapped to phases: 24
 - Unmapped: 0 ✓
 
 ---

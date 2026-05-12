@@ -3,8 +3,14 @@
 # Shares ~90% with the upcoming infra/hfspaces/Dockerfile (Phase 10).
 # Differences are env defaults + GRADIO_SHARE + HF_HOME (handled there,
 # not here). Keep the body in sync when Phase 10 lands.
+#
+# CUDA 11.8 base picked for maximum host-driver compatibility (NVIDIA
+# driver ≥520.61 supports it — i.e. virtually any modern Windows host
+# with WSL2 GPU passthrough). Pair with cu118 torch wheels in
+# requirements.txt. If you upgrade your host driver to ≥535, you can
+# safely move both to cu121 — they share the same PyTorch 2.4.1 release.
 
-FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \

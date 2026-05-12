@@ -5,7 +5,11 @@
 #   - RunPod pod                        → infra/runpod/startup.sh
 #   - HF Spaces (Phase 10)             → infra/hfspaces/Dockerfile
 #
-# CUDA 12.1 is the target. Torch wheels come from the PyTorch index.
+# CUDA 11.8 is the target (matches infra/local/Dockerfile; widest host-driver
+# compatibility — NVIDIA driver ≥520.61). Torch wheels come from the PyTorch
+# cu118 index. If you upgrade your driver to ≥535 you can move both this file
+# and the Dockerfile to cu121 (same PyTorch 2.4.1 release on both indices).
+#
 # Verify a fresh resolve before tagging a release:
 #   python -m venv /tmp/rapidex-resolve && source /tmp/rapidex-resolve/bin/activate
 #   pip install --dry-run -r requirements.txt
@@ -16,7 +20,7 @@
 #   - fish-speech     → ${FISH_SPEECH_DIR}  (git clone; package not stable on PyPI)
 # scripts/download_models.py fetches weights for all three plus WhisperX + Demucs.
 
---extra-index-url https://download.pytorch.org/whl/cu121
+--extra-index-url https://download.pytorch.org/whl/cu118
 
 # ── UI ───────────────────────────────────────────────────────────────────────
 gradio>=4.44,<5
@@ -38,7 +42,7 @@ python-dotenv>=1.0
 # numpy pinned <2 because torch 2.4 / ctranslate2 still target numpy 1.x ABI.
 numpy>=1.24,<2
 
-# torch matrix — CUDA 12.1
+# torch matrix — CUDA 11.8 (see header)
 torch==2.4.1
 torchaudio==2.4.1
 

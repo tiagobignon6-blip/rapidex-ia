@@ -62,6 +62,9 @@ Then open `http://localhost:7860`. The "Transcribe & Translate" button works (sl
 ### `docker compose up` fails with `could not select device driver "nvidia"`
 NVIDIA Container Toolkit isn't wired up. Run the install snippet under Prerequisites, restart Docker, retry.
 
+### Container init fails with `nvidia-container-cli: requirement error: unsatisfied condition: cuda>=N`
+Your Windows-host NVIDIA driver is older than what the container's CUDA runtime requires. The shipped Dockerfile uses CUDA 11.8 (compatible with driver ≥520.61). If you see this error, your driver is older than that — update via NVIDIA's Game Ready / Studio driver download for your GPU. Alternatively, edit `infra/local/Dockerfile` to `FROM nvidia/cuda:11.4.x-cudnn8-runtime-ubuntu20.04` and flip `requirements.txt` extra-index-url to `cu114` — but at that point a driver update is the saner move.
+
 ### Gradio loads but transcription returns empty / garbage text
 Likely a PyTorch + ctranslate2 + faster-whisper version mismatch (Pitfall #3 in `.planning/research/PITFALLS.md`). Inside the container: `pip show ctranslate2 faster-whisper torch` and compare against the pins in `requirements.txt`. If they drifted, rebuild with `--no-cache`.
 

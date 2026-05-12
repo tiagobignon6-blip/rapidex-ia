@@ -1,0 +1,59 @@
+# Models — downloaded at boot via scripts/download_models.py, never committed
+**/*.pth
+**/*.ckpt
+**/*.safetensors
+**/*.bin
+**/*.onnx
+checkpoints/
+weights/
+models/
+fish-speech/checkpoints/
+MuseTalk/models/
+Wav2Lip/checkpoints/
+
+# Python virtualenvs
+.venv/
+venv/
+env/
+
+# Python caches and build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+
+# Local secrets — never commit
+.env
+.env.local
+.env.*.local
+
+# Outputs (rendered videos, audio scratch)
+outputs/
+*.wav
+*.mp3
+*.flac
+*.mp4
+*.mkv
+*.webm
+# Explicit allow for tiny test fixtures only
+!tests/fixtures/*.mp4
+!tests/fixtures/*.wav
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# RunPod / HF Spaces transient
+.runpod/
+.cache/
+*.log

@@ -1,0 +1,62 @@
+# RAPIDEX IA — runtime deps
+#
+# Three install profiles share this file:
+#   - Local dev (WSL2 + NVIDIA GPU)    → infra/local/Dockerfile / start.sh
+#   - RunPod pod                        → infra/runpod/startup.sh
+#   - HF Spaces (Phase 10)             → infra/hfspaces/Dockerfile
+#
+# CUDA 11.8 is the target (matches infra/local/Dockerfile; widest host-driver
+# compatibility — NVIDIA driver ≥520.61). Torch wheels come from the PyTorch
+# cu118 index. If you upgrade your driver to ≥535 you can move both this file
+# and the Dockerfile to cu121 (same PyTorch 2.4.1 release on both indices).
+#
+# Verify a fresh resolve before tagging a release:
+#   python -m venv /tmp/rapidex-resolve && source /tmp/rapidex-resolve/bin/activate
+#   pip install --dry-run -r requirements.txt
+#
+# Out of scope here (cloned + invoked as subprocess, not pip-installed):
+#   - MuseTalk        → ${MUSETALK_DIR}     (git clone from upstream)
+#   - Wav2Lip         → ${WAV2LIP_DIR}      (git clone from upstream)
+#   - fish-speech     → ${FISH_SPEECH_DIR}  (git clone; package not stable on PyPI)
+# scripts/download_models.py fetches weights for all three plus WhisperX + Demucs.
+
+--extra-index-url https://download.pytorch.org/whl/cu118
+
+# ── UI ───────────────────────────────────────────────────────────────────────
+gradio>=4.44,<5
+gradio_client
+
+# ── Video / audio I/O ────────────────────────────────────────────────────────
+ffmpeg-python>=0.2.0
+Pillow>=10.4
+librosa>=0.10
+soundfile>=0.12
+
+# ── HF model fetching ────────────────────────────────────────────────────────
+huggingface_hub>=0.25
+
+# ── Local config ─────────────────────────────────────────────────────────────
+python-dotenv>=1.0
+
+# ── ML stack (locked at Phase 2.5; verify in a fresh venv before bumping) ────
+# numpy pinned <2 because torch 2.4 / ctranslate2 still target numpy 1.x ABI.
+numpy>=1.24,<2
+
+# torch matrix — CUDA 11.8 (see header)
+torch==2.4.1
+torchaudio==2.4.1
+
+# Transcription: WhisperX wraps faster-whisper + ctranslate2. The three pin
+# together; bumping one usually requires bumping the others.
+ctranslate2>=4.4,<5
+faster-whisper>=1.0.3
+whisperx>=3.1.5
+
+# Translation
+deep-translator>=1.11.4
+
+# Audio source separation
+demucs>=4.0.1
+
+# Fish Speech — installed via git in start.sh, NOT here, because the PyPI
+# distribution is inconsistent across versions. Pin the commit/tag in start.sh.

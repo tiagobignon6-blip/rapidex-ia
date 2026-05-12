@@ -1,0 +1,36 @@
+# RAPIDEX IA — local dev compose (WSL2 + NVIDIA GPU).
+#
+# Usage:
+#   docker compose -f infra/local/docker-compose.yml up
+#   docker compose -f infra/local/docker-compose.yml up --build  # rebuild image
+#
+# Mounts ./models and ./outputs from the repo root so weights persist across
+# container restarts and outputs land where you can grab them.
+
+services:
+  rapidex:
+    build:
+      context: ../..
+      dockerfile: infra/local/Dockerfile
+    image: rapidex-ia:local
+    container_name: rapidex-ia-local
+    ports:
+      - "7860:7860"
+    volumes:
+      - ../../models:/app/models
+      - ../../outputs:/app/outputs
+    env_file:
+      - ../../.env
+    environment:
+      # Compose-level defaults (env_file overrides these per key)
+      RAPIDEX_DEVICE: cuda
+      GRADIO_SERVER_NAME: 0.0.0.0
+      GRADIO_SHARE: "false"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped

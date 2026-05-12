@@ -5,104 +5,13 @@ import tempfile
 import shutil
 import time
 
-# ─────────────────────────────────────────
-#  PIPELINE FUNCTIONS
-# ─────────────────────────────────────────
-
-def extract_audio(video_path, out_dir):
-    raw_audio = os.path.join(out_dir, "raw_audio.wav")
-    subprocess.run([
-        "ffmpeg", "-y", "-i", video_path,
-        "-vn", "-ac", "1", "-ar", "16000", "-sample_fmt", "s16", raw_audio
-    ], check=True, capture_output=True)
-    return raw_audio
-
-
-def run_demucs(raw_audio, out_dir):
-    demucs_out = os.path.join(out_dir, "demucs")
-    subprocess.run([
-        "python", "-m", "demucs", "--two-stems=vocals", "-o", demucs_out, raw_audio
-    ], check=True, capture_output=True)
-    stem_dir = None
-    for root, dirs, files in os.walk(demucs_out):
-        if "vocals.wav" in files:
-            stem_dir = root
-            break
-    if stem_dir is None:
-        raise RuntimeError("Demucs não gerou vocals.wav")
-    return os.path.join(stem_dir, "vocals.wav"), os.path.join(stem_dir, "no_vocals.wav")
-
-
-def run_whisperx(vocals_path, lang_code):
-    import whisperx, torch
-    device  = "cuda" if torch.cuda.is_available() else "cpu"
-    compute = "float16" if device == "cuda" else "int8"
-    model   = whisperx.load_model(
-        "large-v3", device, compute_type=compute,
-        language=lang_code if lang_code != "auto" else None
-    )
-    audio  = whisperx.load_audio(vocals_path)
-    result = model.transcribe(audio, batch_size=16)
-    try:
-        lc = result.get("language", lang_code)
-        am, meta = whisperx.load_align_model(language_code=lc, device=device)
-        result   = whisperx.align(result["segments"], am, meta, audio, device)
-    except Exception:
-        pass
-    return " ".join(s["text"].strip() for s in result["segments"])
-
-
-def translate_text(text, source_code, target_code):
-    from deep_translator import GoogleTranslator
-    return GoogleTranslator(source=source_code, target=target_code).translate(text)
-
-
-def run_fish_speech(text, ref_wav, out_dir):
-    dubbed = os.path.join(out_dir, "dubbed_voice.wav")
-    r = subprocess.run([
-        "python", "-m", "fish_speech.inference",
-        "--text", text,
-        "--reference-audio", ref_wav,
-        "--output", dubbed,
-        "--device", "cuda"
-    ], capture_output=True, text=True)
-    if not os.path.exists(dubbed):
-        raise RuntimeError(f"Fish Speech falhou:\n{r.stderr}")
-    return dubbed
-
-
-def mix_audio(dubbed, bgmusic, out_dir):
-    mixed = os.path.join(out_dir, "mixed_audio.wav")
-    subprocess.run([
-        "ffmpeg", "-y", "-i", dubbed, "-i", bgmusic,
-        "-filter_complex",
-        "[0:a]volume=1.0[v];[1:a]volume=0.35[b];[v][b]amix=inputs=2:duration=longest[out]",
-        "-map", "[out]", mixed
-    ], check=True, capture_output=True)
-    return mixed
-
-
-def run_lipsync(video, audio, out_dir):
-    output = os.path.join(out_dir, "rapidex_output.mp4")
-    musetalk = "/workspace/MuseTalk"
-    r = subprocess.run([
-        "python", f"{musetalk}/scripts/inference.py",
-        "--video_path", video, "--audio_path", audio,
-        "--output_path", output, "--bbox_shift", "0"
-    ], capture_output=True, text=True, cwd=musetalk)
-    if os.path.exists(output):
-        return output
-    # fallback Wav2Lip
-    wav2lip = "/workspace/Wav2Lip"
-    subprocess.run([
-        "python", f"{wav2lip}/inference.py",
-        "--checkpoint_path", f"{wav2lip}/checkpoints/wav2lip_gan.pth",
-        "--face", video, "--audio", audio,
-        "--outfile", output,
-        "--pads", "0", "10", "0", "0", "--resize_factor", "1"
-    ], check=True, capture_output=True, cwd=wav2lip)
-    return output
-
+from pipeline.runtime import OUTPUTS_DIR
+from pipeline.audio import extract_audio, mix_audio
+from pipeline.separator import run_demucs
+from pipeline.transcribe import run_whisperx
+from pipeline.translate import translate_text
+from pipeline.tts import run_fish_speech
+from pipeline.lipsync import run_lipsync
 
 # Sessão entre etapas
 _S = {}
@@ -155,7 +64,7 @@ def step_dub(translated_text, use_lipsync, ref_audio, progress=gr.Progress(track
                 "-c:v", "copy", "-map", "0:v:0", "-map", "1:a:0", "-shortest", out
             ], check=True, capture_output=True)
         progress(0.95, desc="Finalizando...")
-        final = f"/workspace/output_{int(time.time())}.mp4"
+        final = os.path.join(OUTPUTS_DIR, f"output_{int(time.time())}.mp4")
         shutil.copy(out, final)
         return out, "✅ Dublagem concluída!"
     except Exception as e:

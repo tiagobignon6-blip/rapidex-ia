@@ -13,29 +13,11 @@ from pipeline.runtime import (
 )
 from pipeline.audio import extract_audio, mix_audio
 from pipeline.separator import run_demucs
+from pipeline.transcribe import run_whisperx
 
 # ─────────────────────────────────────────
 #  PIPELINE FUNCTIONS
 # ─────────────────────────────────────────
-
-def run_whisperx(vocals_path, lang_code):
-    import whisperx
-    device  = detect_device()
-    compute = "float16" if device == "cuda" else "int8"
-    model   = whisperx.load_model(
-        "large-v3", device, compute_type=compute,
-        language=lang_code if lang_code != "auto" else None
-    )
-    audio  = whisperx.load_audio(vocals_path)
-    result = model.transcribe(audio, batch_size=16)
-    try:
-        lc = result.get("language", lang_code)
-        am, meta = whisperx.load_align_model(language_code=lc, device=device)
-        result   = whisperx.align(result["segments"], am, meta, audio, device)
-    except Exception:
-        pass
-    return " ".join(s["text"].strip() for s in result["segments"])
-
 
 def translate_text(text, source_code, target_code):
     from deep_translator import GoogleTranslator

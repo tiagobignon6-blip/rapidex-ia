@@ -1,38 +1,38 @@
 {
   "schema_version": 1,
-  "_comment": "Operator fills url + sha256 + bytes_expected during pod swap (see infra/runpod/SWAP-PROCEDURE.md). dest_path is relative to RAPIDEX_MODELS_DIR.",
+  "_comment": "Public URLs filled at Phase 2.5 T-10. sha256 stays 'TODO' until the operator's first successful local fetch — download_models.py will print the observed SHA on completion; paste back into this file as a follow-up commit. dest_path is relative to RAPIDEX_MODELS_DIR. bytes_expected is informational (the fetcher does not validate it; HF URLs sometimes redirect and the Content-Length is not always accurate).",
   "models": [
     {
       "name": "whisperx-large-v3",
-      "url": "TODO",
+      "url": "https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main/model.bin",
       "dest_path": "whisperx/large-v3.bin",
       "sha256": "TODO",
-      "bytes_expected": 0
+      "bytes_expected": 3086912237
     },
     {
       "name": "fish-speech-v1.5",
-      "url": "TODO",
-      "dest_path": "fish-speech/v1.5.safetensors",
+      "url": "https://huggingface.co/fishaudio/fish-speech-1.5/resolve/main/model.pth",
+      "dest_path": "fish-speech/v1.5.pth",
       "sha256": "TODO",
       "bytes_expected": 0
     },
     {
       "name": "musetalk",
-      "url": "TODO",
+      "url": "https://huggingface.co/TMElyralab/MuseTalk/resolve/main/musetalk/pytorch_model.bin",
       "dest_path": "musetalk/musetalk.pth",
       "sha256": "TODO",
       "bytes_expected": 0
     },
     {
       "name": "wav2lip",
-      "url": "TODO",
-      "dest_path": "wav2lip/wav2lip.pth",
+      "url": "https://huggingface.co/camenduru/Wav2Lip/resolve/main/wav2lip_gan.pth",
+      "dest_path": "wav2lip/wav2lip_gan.pth",
       "sha256": "TODO",
       "bytes_expected": 0
     },
     {
       "name": "demucs-htdemucs",
-      "url": "TODO",
+      "url": "https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/955717e8-8726e21a.th",
       "dest_path": "demucs/htdemucs.th",
       "sha256": "TODO",
       "bytes_expected": 0

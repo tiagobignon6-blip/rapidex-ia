@@ -35,10 +35,12 @@ def sha256_of(path: Path, chunk: int = 1 << 20) -> str:
 
 def status(entry: dict) -> tuple[str, Path]:
     dest = MODELS_DIR / entry["dest_path"]
-    if entry["url"] == "TODO" or entry["sha256"] == "TODO":
+    if entry["url"] == "TODO":
         return ("manifest-incomplete", dest)
     if not dest.exists():
         return ("missing", dest)
+    if entry["sha256"] == "TODO":
+        return ("present-unverified", dest)
     actual = sha256_of(dest)
     if actual == entry["sha256"]:
         return ("present", dest)
@@ -50,6 +52,12 @@ def download(entry: dict, dest: Path) -> None:
     print(f"  ↓ downloading {entry['name']} from {entry['url']}")
     urllib.request.urlretrieve(entry["url"], dest)
     actual = sha256_of(dest)
+    if entry["sha256"] == "TODO":
+        print(
+            f"  • {entry['name']} fetched (sha256 was TODO; observed: {actual})"
+            f"\n    → paste this value into scripts/models.manifest.json to enable verification"
+        )
+        return
     if actual != entry["sha256"]:
         dest.unlink(missing_ok=True)
         sys.exit(

@@ -11,19 +11,11 @@ from pipeline.runtime import (
     OUTPUTS_DIR,
     detect_device,
 )
+from pipeline.audio import extract_audio, mix_audio
 
 # ─────────────────────────────────────────
 #  PIPELINE FUNCTIONS
 # ─────────────────────────────────────────
-
-def extract_audio(video_path, out_dir):
-    raw_audio = os.path.join(out_dir, "raw_audio.wav")
-    subprocess.run([
-        "ffmpeg", "-y", "-i", video_path,
-        "-vn", "-ac", "1", "-ar", "16000", "-sample_fmt", "s16", raw_audio
-    ], check=True, capture_output=True)
-    return raw_audio
-
 
 def run_demucs(raw_audio, out_dir):
     demucs_out = os.path.join(out_dir, "demucs")
@@ -83,17 +75,6 @@ def run_fish_speech(text, ref_wav, out_dir):
     if not os.path.exists(dubbed):
         raise RuntimeError(f"Fish Speech falhou:\n{r.stderr}")
     return dubbed
-
-
-def mix_audio(dubbed, bgmusic, out_dir):
-    mixed = os.path.join(out_dir, "mixed_audio.wav")
-    subprocess.run([
-        "ffmpeg", "-y", "-i", dubbed, "-i", bgmusic,
-        "-filter_complex",
-        "[0:a]volume=1.0[v];[1:a]volume=0.35[b];[v][b]amix=inputs=2:duration=longest[out]",
-        "-map", "[out]", mixed
-    ], check=True, capture_output=True)
-    return mixed
 
 
 def run_lipsync(video, audio, out_dir):

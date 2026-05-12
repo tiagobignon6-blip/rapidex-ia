@@ -5,47 +5,13 @@ import tempfile
 import shutil
 import time
 
-from pipeline.runtime import (
-    MUSETALK_DIR,
-    WAV2LIP_DIR,
-    OUTPUTS_DIR,
-    detect_device,
-)
+from pipeline.runtime import OUTPUTS_DIR
 from pipeline.audio import extract_audio, mix_audio
 from pipeline.separator import run_demucs
 from pipeline.transcribe import run_whisperx
 from pipeline.translate import translate_text
 from pipeline.tts import run_fish_speech
-
-# ─────────────────────────────────────────
-#  PIPELINE FUNCTIONS
-# ─────────────────────────────────────────
-
-def run_lipsync(video, audio, out_dir):
-    if detect_device() == "cpu":
-        raise gr.Error(
-            "GPU required: lipsync (MuseTalk + Wav2Lip) needs CUDA. "
-            "Set RAPIDEX_DEVICE=cuda on a CUDA host, or run with the full "
-            "Compose recipe (infra/local/docker-compose.yml)."
-        )
-    output = os.path.join(out_dir, "rapidex_output.mp4")
-    r = subprocess.run([
-        "python", f"{MUSETALK_DIR}/scripts/inference.py",
-        "--video_path", video, "--audio_path", audio,
-        "--output_path", output, "--bbox_shift", "0"
-    ], capture_output=True, text=True, cwd=MUSETALK_DIR)
-    if os.path.exists(output):
-        return output
-    # fallback Wav2Lip
-    subprocess.run([
-        "python", f"{WAV2LIP_DIR}/inference.py",
-        "--checkpoint_path", f"{WAV2LIP_DIR}/checkpoints/wav2lip_gan.pth",
-        "--face", video, "--audio", audio,
-        "--outfile", output,
-        "--pads", "0", "10", "0", "0", "--resize_factor", "1"
-    ], check=True, capture_output=True, cwd=WAV2LIP_DIR)
-    return output
-
+from pipeline.lipsync import run_lipsync
 
 # Sessão entre etapas
 _S = {}

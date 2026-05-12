@@ -4,6 +4,53 @@ import subprocess
 import tempfile
 import shutil
 import time
+from pathlib import Path
+
+# ─────────────────────────────────────────
+#  RUNTIME PROFILE — env-driven paths + device
+# ─────────────────────────────────────────
+
+REPO_ROOT = Path(__file__).resolve().parent
+
+
+def _resolve_dir(env_name: str, legacy_path: str, fallback_under_models: str) -> str:
+    """Resolve a runtime directory across RunPod / local / HF Spaces.
+
+    Priority: explicit env var → legacy `/workspace/...` if it exists (pod
+    no-regression) → `${RAPIDEX_MODELS_DIR}/<fallback>` (local + HF Spaces).
+    """
+    if env_value := os.environ.get(env_name):
+        return env_value
+    if os.path.isdir(legacy_path):
+        return legacy_path
+    models_dir = os.environ.get("RAPIDEX_MODELS_DIR", str(REPO_ROOT / "models"))
+    return str(Path(models_dir) / fallback_under_models)
+
+
+MUSETALK_DIR = _resolve_dir("MUSETALK_DIR", "/workspace/MuseTalk", "musetalk")
+WAV2LIP_DIR = _resolve_dir("WAV2LIP_DIR", "/workspace/Wav2Lip", "wav2lip")
+OUTPUTS_DIR = os.environ.get(
+    "RAPIDEX_OUTPUTS_DIR",
+    "/workspace" if os.path.isdir("/workspace") else str(REPO_ROOT / "outputs"),
+)
+os.makedirs(OUTPUTS_DIR, exist_ok=True)
+
+
+def detect_device(override: str | None = None) -> str:
+    """Return cuda → mps → cpu. RAPIDEX_DEVICE env overrides everything."""
+    forced = override or os.environ.get("RAPIDEX_DEVICE")
+    if forced:
+        return forced
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "cuda"
+        if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+            return "mps"
+    except Exception:
+        pass
+    return "cpu"
+
 
 # ─────────────────────────────────────────
 #  PIPELINE FUNCTIONS
@@ -34,8 +81,8 @@ def run_demucs(raw_audio, out_dir):
 
 
 def run_whisperx(vocals_path, lang_code):
-    import whisperx, torch
-    device  = "cuda" if torch.cuda.is_available() else "cpu"
+    import whisperx
+    device  = detect_device()
     compute = "float16" if device == "cuda" else "int8"
     model   = whisperx.load_model(
         "large-v3", device, compute_type=compute,
@@ -58,13 +105,20 @@ def translate_text(text, source_code, target_code):
 
 
 def run_fish_speech(text, ref_wav, out_dir):
+    device = detect_device()
+    if device == "cpu":
+        raise gr.Error(
+            "GPU required: Fish Speech V1.5 needs CUDA. "
+            "Set RAPIDEX_DEVICE=cuda on a CUDA host, or run with the full "
+            "Compose recipe (infra/local/docker-compose.yml)."
+        )
     dubbed = os.path.join(out_dir, "dubbed_voice.wav")
     r = subprocess.run([
         "python", "-m", "fish_speech.inference",
         "--text", text,
         "--reference-audio", ref_wav,
         "--output", dubbed,
-        "--device", "cuda"
+        "--device", device,
     ], capture_output=True, text=True)
     if not os.path.exists(dubbed):
         raise RuntimeError(f"Fish Speech falhou:\n{r.stderr}")
@@ -83,24 +137,28 @@ def mix_audio(dubbed, bgmusic, out_dir):
 
 
 def run_lipsync(video, audio, out_dir):
+    if detect_device() == "cpu":
+        raise gr.Error(
+            "GPU required: lipsync (MuseTalk + Wav2Lip) needs CUDA. "
+            "Set RAPIDEX_DEVICE=cuda on a CUDA host, or run with the full "
+            "Compose recipe (infra/local/docker-compose.yml)."
+        )
     output = os.path.join(out_dir, "rapidex_output.mp4")
-    musetalk = "/workspace/MuseTalk"
     r = subprocess.run([
-        "python", f"{musetalk}/scripts/inference.py",
+        "python", f"{MUSETALK_DIR}/scripts/inference.py",
         "--video_path", video, "--audio_path", audio,
         "--output_path", output, "--bbox_shift", "0"
-    ], capture_output=True, text=True, cwd=musetalk)
+    ], capture_output=True, text=True, cwd=MUSETALK_DIR)
     if os.path.exists(output):
         return output
     # fallback Wav2Lip
-    wav2lip = "/workspace/Wav2Lip"
     subprocess.run([
-        "python", f"{wav2lip}/inference.py",
-        "--checkpoint_path", f"{wav2lip}/checkpoints/wav2lip_gan.pth",
+        "python", f"{WAV2LIP_DIR}/inference.py",
+        "--checkpoint_path", f"{WAV2LIP_DIR}/checkpoints/wav2lip_gan.pth",
         "--face", video, "--audio", audio,
         "--outfile", output,
         "--pads", "0", "10", "0", "0", "--resize_factor", "1"
-    ], check=True, capture_output=True, cwd=wav2lip)
+    ], check=True, capture_output=True, cwd=WAV2LIP_DIR)
     return output
 
 
@@ -155,7 +213,7 @@ def step_dub(translated_text, use_lipsync, ref_audio, progress=gr.Progress(track
                 "-c:v", "copy", "-map", "0:v:0", "-map", "1:a:0", "-shortest", out
             ], check=True, capture_output=True)
         progress(0.95, desc="Finalizando...")
-        final = f"/workspace/output_{int(time.time())}.mp4"
+        final = os.path.join(OUTPUTS_DIR, f"output_{int(time.time())}.mp4")
         shutil.copy(out, final)
         return out, "✅ Dublagem concluída!"
     except Exception as e:

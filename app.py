@@ -4,53 +4,13 @@ import subprocess
 import tempfile
 import shutil
 import time
-from pathlib import Path
 
-# ─────────────────────────────────────────
-#  RUNTIME PROFILE — env-driven paths + device
-# ─────────────────────────────────────────
-
-REPO_ROOT = Path(__file__).resolve().parent
-
-
-def _resolve_dir(env_name: str, legacy_path: str, fallback_under_models: str) -> str:
-    """Resolve a runtime directory across RunPod / local / HF Spaces.
-
-    Priority: explicit env var → legacy `/workspace/...` if it exists (pod
-    no-regression) → `${RAPIDEX_MODELS_DIR}/<fallback>` (local + HF Spaces).
-    """
-    if env_value := os.environ.get(env_name):
-        return env_value
-    if os.path.isdir(legacy_path):
-        return legacy_path
-    models_dir = os.environ.get("RAPIDEX_MODELS_DIR", str(REPO_ROOT / "models"))
-    return str(Path(models_dir) / fallback_under_models)
-
-
-MUSETALK_DIR = _resolve_dir("MUSETALK_DIR", "/workspace/MuseTalk", "musetalk")
-WAV2LIP_DIR = _resolve_dir("WAV2LIP_DIR", "/workspace/Wav2Lip", "wav2lip")
-OUTPUTS_DIR = os.environ.get(
-    "RAPIDEX_OUTPUTS_DIR",
-    "/workspace" if os.path.isdir("/workspace") else str(REPO_ROOT / "outputs"),
+from pipeline.runtime import (
+    MUSETALK_DIR,
+    WAV2LIP_DIR,
+    OUTPUTS_DIR,
+    detect_device,
 )
-os.makedirs(OUTPUTS_DIR, exist_ok=True)
-
-
-def detect_device(override: str | None = None) -> str:
-    """Return cuda → mps → cpu. RAPIDEX_DEVICE env overrides everything."""
-    forced = override or os.environ.get("RAPIDEX_DEVICE")
-    if forced:
-        return forced
-    try:
-        import torch
-        if torch.cuda.is_available():
-            return "cuda"
-        if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
-            return "mps"
-    except Exception:
-        pass
-    return "cpu"
-
 
 # ─────────────────────────────────────────
 #  PIPELINE FUNCTIONS

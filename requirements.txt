@@ -1,0 +1,14 @@
+gradio>=4.0.0
+openai-whisper
+whisperx
+deep-translator
+demucs
+torch
+torchaudio
+transformers
+accelerate
+ctranslate2
+gtts
+opencv-python
+matplotlib
+ffmpeg-python

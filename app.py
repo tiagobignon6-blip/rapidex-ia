@@ -1,548 +1,411 @@
-"""
-RAPIDEX IA — AI Video Translation
-Pipeline: Demucs → WhisperX → GoogleTranslate → Fish Speech/XTTS → MuseTalk/Wav2Lip
-"""
-
-import os, sys, subprocess, tempfile, shutil, time, traceback
-os.environ["COQUI_TOS_AGREED"] = "1"
-
-# ── FIX PyTorch 2.6+: weights_only padrão virou True, quebra checkpoints antigos ──
-import torch
-_orig_load = torch.load
-def _safe_load(*a, **kw):
-    kw.setdefault("weights_only", False)
-    return _orig_load(*a, **kw)
-torch.load = _safe_load
-
 import gradio as gr
-from deep_translator import GoogleTranslator
+import os
+import subprocess
+import tempfile
+import shutil
+import time
+import logging
 
-# ── Detecta ambiente ──────────────────────────────────────────────────────────
-USE_GPU   = torch.cuda.is_available()
-DEVICE    = "cuda" if USE_GPU else "cpu"
-GPU_NAME  = torch.cuda.get_device_name(0) if USE_GPU else "CPU (sem GPU)"
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger("rapidex")
 
-# Paths dos modelos — funcionam tanto no RunPod (/workspace) quanto no Colab
-BASE      = os.environ.get("RAPIDEX_BASE", "/workspace")
-WAV2LIP   = os.path.join(BASE, "Wav2Lip")
-MUSETALK  = os.path.join(BASE, "MuseTalk")
+# ─────────────────────────────────────────
+# PIPELINE FUNCTIONS
+# ─────────────────────────────────────────
 
-LANGUAGES = {
-    "Detectar automaticamente": "auto",
-    "Português": "pt",  "Inglês": "en",    "Espanhol": "es",
-    "Francês": "fr",    "Alemão": "de",    "Italiano": "it",
-    "Japonês": "ja",    "Coreano": "ko",   "Chinês": "zh",
-    "Árabe": "ar",      "Russo": "ru",     "Hindi": "hi",
-}
-
-# ── Estado de sessão (substituir por gr.State em versão futura) ───────────────
-_S: dict = {}
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  PIPELINE FUNCTIONS
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def extract_audio(video_path: str, out_dir: str) -> str:
-    """Extrai áudio WAV mono 16kHz do vídeo."""
-    raw = os.path.join(out_dir, "raw_audio.wav")
-    r = subprocess.run(
-        ["ffmpeg", "-y", "-i", video_path,
-         "-vn", "-ac", "1", "-ar", "16000", "-sample_fmt", "s16", raw],
-        capture_output=True, text=True
-    )
-    if not os.path.exists(raw):
-        raise RuntimeError(f"ffmpeg extract failed:\n{r.stderr[-500:]}")
-    return raw
+def extract_audio(video_path, out_dir):
+    raw_audio = os.path.join(out_dir, "raw_audio.wav")
+    result = subprocess.run([
+        "ffmpeg", "-y", "-i", video_path,
+        "-vn", "-ac", "1", "-ar", "16000", "-sample_fmt", "s16", raw_audio
+    ], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"FFmpeg (extract_audio) falhou:\n{result.stderr}")
+    return raw_audio
 
 
-def run_demucs(raw_audio: str, out_dir: str):
-    """Separa voz do fundo musical usando Demucs htdemucs."""
+def run_demucs(raw_audio, out_dir):
     demucs_out = os.path.join(out_dir, "demucs")
-    subprocess.run(
-        ["python", "-m", "demucs", "--two-stems=vocals", "-o", demucs_out, raw_audio],
-        capture_output=True
-    )
-    # Procura vocals.wav na saída
-    for root, _, files in os.walk(demucs_out):
+    result = subprocess.run([
+        "python", "-m", "demucs", "--two-stems=vocals", "-o", demucs_out, raw_audio
+    ], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"Demucs falhou:\n{result.stderr}")
+
+    stem_dir = None
+    for root, dirs, files in os.walk(demucs_out):
         if "vocals.wav" in files:
-            vocals  = os.path.join(root, "vocals.wav")
-            bgmusic = os.path.join(root, "no_vocals.wav")
-            return vocals, bgmusic if os.path.exists(bgmusic) else None
-    # Fallback: demucs falhou, usa áudio original
-    return raw_audio, None
+            stem_dir = root
+            break
+    if stem_dir is None:
+        raise RuntimeError("Demucs nao gerou vocals.wav")
+    return os.path.join(stem_dir, "vocals.wav"), os.path.join(stem_dir, "no_vocals.wav")
 
 
-def run_whisperx(vocals_path: str, lang_code: str) -> str:
-    """Transcreve com WhisperX large-v3. Retorna texto original."""
-    import whisperx
-    compute = "float16" if USE_GPU else "int8"
-    lang    = lang_code if lang_code != "auto" else None
-    model   = whisperx.load_model("large-v3", DEVICE, compute_type=compute, language=lang)
-    audio   = whisperx.load_audio(vocals_path)
-    result  = model.transcribe(audio, batch_size=16)
-    # Alinhamento de palavras (opcional — silencioso se falhar)
+def run_whisperx(vocals_path, lang_code):
     try:
-        lc = result.get("language", lang_code if lang_code != "auto" else "en")
-        am, meta = whisperx.load_align_model(language_code=lc, device=DEVICE)
-        result   = whisperx.align(result["segments"], am, meta, audio, DEVICE)
-    except Exception:
-        pass
-    text = " ".join(s["text"].strip() for s in result.get("segments", []))
-    del model
-    if USE_GPU:
-        torch.cuda.empty_cache()
-    return text
+        import whisperx
+        import torch
+    except ImportError as e:
+        raise RuntimeError(f"Dependencia ausente: {e}. Instale whisperx e torch.")
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    compute = "float16" if device == "cuda" else "int8"
+
+    model = whisperx.load_model(
+        "large-v3", device, compute_type=compute,
+        language=lang_code if lang_code != "auto" else None
+    )
+    audio = whisperx.load_audio(vocals_path)
+    result = model.transcribe(audio, batch_size=16)
+
+    detected_lang = result.get("language", lang_code if lang_code != "auto" else "pt")
+    try:
+        align_model, meta = whisperx.load_align_model(language_code=detected_lang, device=device)
+        result = whisperx.align(result["segments"], align_model, meta, audio, device)
+    except Exception as e:
+        log.warning(f"Alinhamento WhisperX falhou (usando segmentos brutos): {e}")
+
+    segments = result.get("segments", [])
+    text = " ".join(s["text"].strip() for s in segments if s.get("text"))
+    return text, detected_lang
 
 
-def translate_text(text: str, src: str, tgt: str) -> str:
-    """Traduz com Google Translate. Divide textos longos em chunks."""
-    if src == tgt:
+def translate_text(text, source_code, target_code):
+    from deep_translator import GoogleTranslator
+
+    src = source_code if source_code else "auto"
+    tgt = target_code if target_code else "pt"
+
+    if src != "auto" and src == tgt:
         return text
-    MAX = 4500
-    if len(text) <= MAX:
-        return GoogleTranslator(source="auto", target=tgt).translate(text)
-    words, chunks, chunk, size = text.split(), [], [], 0
-    for w in words:
-        if size + len(w) + 1 > MAX:
-            chunks.append(" ".join(chunk)); chunk, size = [w], len(w)
+
+    MAX_CHARS = 4500
+    if len(text) <= MAX_CHARS:
+        return GoogleTranslator(source=src, target=tgt).translate(text) or text
+
+    chunks = []
+    current = ""
+    for sentence in text.split(". "):
+        if len(current) + len(sentence) + 2 <= MAX_CHARS:
+            current += sentence + ". "
         else:
-            chunk.append(w); size += len(w) + 1
-    if chunk: chunks.append(" ".join(chunk))
-    return " ".join(GoogleTranslator(source="auto", target=tgt).translate(c) for c in chunks)
+            if current:
+                chunks.append(current.strip())
+            current = sentence + ". "
+    if current:
+        chunks.append(current.strip())
+
+    translated_chunks = [
+        GoogleTranslator(source=src, target=tgt).translate(c) or c
+        for c in chunks
+    ]
+    return " ".join(translated_chunks)
 
 
-def run_fish_speech(text: str, ref_wav: str, out_dir: str) -> str:
-    """
-    Clona voz com Fish Speech V1.5.
-    Fallback automático para XTTS v2 se Fish Speech não estiver disponível.
-    """
-    out = os.path.join(out_dir, "dubbed_voice.wav")
-    fish_dir = os.path.join(BASE, "fish-speech")
+def run_fish_speech(text, ref_wav, out_dir):
+    dubbed = os.path.join(out_dir, "dubbed_voice.wav")
 
-    # Tenta Fish Speech
-    if os.path.isdir(fish_dir):
-        try:
-            r = subprocess.run(
-                ["python", "tools/run_fish_e2e.py",
-                 "--text", text,
-                 "--reference-audio", ref_wav,
-                 "--output", out,
-                 "--checkpoint-path", "checkpoints/fish-speech-1.5"],
-                cwd=fish_dir, capture_output=True, text=True, timeout=300
-            )
-            if os.path.exists(out): return out
-        except Exception:
-            pass
+    r = subprocess.run([
+        "fish_speech", "infer",
+        "--text", text,
+        "--reference-audio", ref_wav,
+        "--output", dubbed,
+    ], capture_output=True, text=True)
 
-    # Fallback: XTTS v2 (Coqui)
-    try:
-        from TTS.api import TTS
-        tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=USE_GPU)
-        tts.tts_to_file(text=text, file_path=out, speaker_wav=ref_wav, language="pt")
-        if os.path.exists(out): return out
-    except Exception as e_xtts:
-        pass
+    if r.returncode == 0 and os.path.exists(dubbed):
+        return dubbed
 
-    # Último fallback: gTTS (sem clonagem, só para não quebrar)
+    r2 = subprocess.run([
+        "python", "-m", "fish_speech.inference",
+        "--text", text,
+        "--reference-audio", ref_wav,
+        "--output", dubbed,
+        "--device", "cuda"
+    ], capture_output=True, text=True)
+
+    if r2.returncode == 0 and os.path.exists(dubbed):
+        return dubbed
+
+    log.warning("Fish Speech indisponivel. Usando gTTS como fallback.")
     try:
         from gtts import gTTS
-        gTTS(text=text, lang="pt").save(out)
-        return out
-    except Exception:
-        raise RuntimeError("Todos os motores TTS falharam (Fish Speech, XTTS, gTTS).")
-
-
-def mix_audio(dubbed: str, bgmusic: str | None, out_dir: str) -> str:
-    """Mistura voz dublada com música de fundo a 35% de volume."""
-    if not bgmusic or not os.path.exists(bgmusic):
+        tts = gTTS(text=text, lang="pt")
+        mp3_path = os.path.join(out_dir, "dubbed_gtts.mp3")
+        tts.save(mp3_path)
+        conv = subprocess.run([
+            "ffmpeg", "-y", "-i", mp3_path,
+            "-ar", "16000", "-ac", "1", dubbed
+        ], capture_output=True, text=True)
+        if conv.returncode != 0 or not os.path.exists(dubbed):
+            raise RuntimeError("Conversao gTTS mp3->wav falhou")
         return dubbed
-    mixed = os.path.join(out_dir, "mixed_audio.wav")
-    r = subprocess.run(
-        ["ffmpeg", "-y", "-i", dubbed, "-i", bgmusic,
-         "-filter_complex",
-         "[0:a]volume=1.0[v];[1:a]volume=0.35[b];[v][b]amix=inputs=2:duration=longest[out]",
-         "-map", "[out]", mixed],
-        capture_output=True
-    )
-    return mixed if r.returncode == 0 else dubbed
-
-
-def run_lipsync(video: str, audio: str, out_dir: str) -> str:
-    """
-    Lipsync com MuseTalk como primário, Wav2Lip como fallback.
-    Se nenhum disponível, só substitui o áudio.
-    """
-    output = os.path.join(out_dir, "rapidex_output.mp4")
-
-    # Tenta MuseTalk
-    if os.path.isdir(MUSETALK):
-        musetalk_script = os.path.join(MUSETALK, "scripts", "inference.py")
-        if not os.path.exists(musetalk_script):
-            musetalk_script = os.path.join(MUSETALK, "inference.py")
-        if os.path.exists(musetalk_script):
-            r = subprocess.run(
-                ["python", musetalk_script,
-                 "--video_path", video,
-                 "--audio_path", audio,
-                 "--output_path", output,
-                 "--bbox_shift", "0"],
-                capture_output=True, text=True, cwd=MUSETALK
-            )
-            if os.path.exists(output): return output
-
-    # Tenta Wav2Lip
-    wav2lip_inf = os.path.join(WAV2LIP, "inference.py")
-    wav2lip_ckpt = os.path.join(WAV2LIP, "checkpoints", "wav2lip_gan.pth")
-    if os.path.exists(wav2lip_inf) and os.path.exists(wav2lip_ckpt):
-        r = subprocess.run(
-            ["python", wav2lip_inf,
-             "--checkpoint_path", wav2lip_ckpt,
-             "--face", video, "--audio", audio,
-             "--outfile", output,
-             "--pads", "0", "10", "0", "0", "--resize_factor", "1"],
-            capture_output=True, text=True, cwd=WAV2LIP
+    except ImportError:
+        raise RuntimeError(
+            f"Fish Speech falhou e gTTS nao esta instalado.\n"
+            f"Erro Fish Speech: {r2.stderr}"
         )
-        if os.path.exists(output): return output
 
-    # Sem lipsync disponível — só troca o áudio
-    r = subprocess.run(
-        ["ffmpeg", "-y", "-i", video, "-i", audio,
-         "-c:v", "copy", "-map", "0:v:0", "-map", "1:a:0", "-shortest", output],
-        capture_output=True
-    )
-    if not os.path.exists(output):
-        raise RuntimeError("Nenhuma ferramenta de lipsync disponível e ffmpeg merge falhou.")
+
+def mix_audio(dubbed, bgmusic, out_dir):
+    mixed = os.path.join(out_dir, "mixed_audio.wav")
+
+    if not os.path.exists(bgmusic) or os.path.getsize(bgmusic) == 0:
+        log.warning("Musica de fundo ausente ou vazia - usando apenas voz dublada.")
+        shutil.copy(dubbed, mixed)
+        return mixed
+
+    result = subprocess.run([
+        "ffmpeg", "-y", "-i", dubbed, "-i", bgmusic,
+        "-filter_complex",
+        "[0:a]volume=1.0[v];[1:a]volume=0.35[b];[v][b]amix=inputs=2:duration=longest[out]",
+        "-map", "[out]", mixed
+    ], capture_output=True, text=True)
+
+    if result.returncode != 0 or not os.path.exists(mixed):
+        log.warning(f"Mix de audio falhou: {result.stderr} - usando apenas voz dublada.")
+        shutil.copy(dubbed, mixed)
+
+    return mixed
+
+
+def run_lipsync(video, audio, out_dir):
+    output = os.path.join(out_dir, "rapidex_output.mp4")
+    musetalk = "/workspace/MuseTalk"
+
+    if os.path.isdir(musetalk):
+        r = subprocess.run([
+            "python", f"{musetalk}/scripts/inference.py",
+            "--video_path", video, "--audio_path", audio,
+            "--output_path", output, "--bbox_shift", "0"
+        ], capture_output=True, text=True, cwd=musetalk)
+        if r.returncode == 0 and os.path.exists(output):
+            return output
+        log.warning(f"MuseTalk falhou: {r.stderr}")
+
+    wav2lip = "/workspace/Wav2Lip"
+    checkpoint = f"{wav2lip}/checkpoints/wav2lip_gan.pth"
+    if os.path.isdir(wav2lip) and os.path.exists(checkpoint):
+        r2 = subprocess.run([
+            "python", f"{wav2lip}/inference.py",
+            "--checkpoint_path", checkpoint,
+            "--face", video, "--audio", audio,
+            "--outfile", output,
+            "--pads", "0", "10", "0", "0", "--resize_factor", "1"
+        ], capture_output=True, text=True, cwd=wav2lip)
+        if r2.returncode == 0 and os.path.exists(output):
+            return output
+        log.warning(f"Wav2Lip falhou: {r2.stderr}")
+
+    log.warning("Lip-sync indisponivel - substituindo apenas o audio.")
+    r3 = subprocess.run([
+        "ffmpeg", "-y", "-i", video, "-i", audio,
+        "-c:v", "copy", "-map", "0:v:0", "-map", "1:a:0", "-shortest", output
+    ], capture_output=True, text=True)
+    if r3.returncode != 0 or not os.path.exists(output):
+        raise RuntimeError(f"Fallback FFmpeg falhou:\n{r3.stderr}")
     return output
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  GRADIO HANDLERS
-# ═══════════════════════════════════════════════════════════════════════════════
+def cleanup_tmp(tmp_dir):
+    try:
+        if tmp_dir and os.path.isdir(tmp_dir):
+            shutil.rmtree(tmp_dir)
+            log.info(f"Temp removido: {tmp_dir}")
+    except Exception as e:
+        log.warning(f"Falha ao remover temp {tmp_dir}: {e}")
 
-def step_transcribe(video, source_lang, target_lang, progress=gr.Progress(track_tqdm=True)):
+
+# ─────────────────────────────────────────
+# STEP FUNCTIONS (com gr.State - thread-safe)
+# ─────────────────────────────────────────
+
+def step_transcribe(video, source_lang, target_lang, session_state, progress=gr.Progress(track_tqdm=True)):
     if video is None:
-        return "", "", "❌ Envie um vídeo primeiro."
+        raise gr.Error("Envie um video.")
+
     src = LANGUAGES.get(source_lang, "auto")
     tgt = LANGUAGES.get(target_lang, "pt")
+
+    if session_state and session_state.get("tmp"):
+        cleanup_tmp(session_state["tmp"])
+
     tmp = tempfile.mkdtemp(prefix="rapidex_")
-    _S.update({"tmp": tmp, "video": video, "src": src, "tgt": tgt})
+    new_state = {"tmp": tmp, "video": video, "src": src, "tgt": tgt}
+
     try:
-        progress(0.10, desc="Extraindo áudio...")
+        progress(0.10, desc="Extraindo audio...")
         raw = extract_audio(video, tmp)
 
-        progress(0.25, desc="Separando voz do fundo (Demucs)...")
+        progress(0.25, desc="Separando voz e musica...")
         vocals, bg = run_demucs(raw, tmp)
-        _S.update({"vocals": vocals, "bg": bg})
+        new_state["vocals"] = vocals
+        new_state["bg"] = bg
 
-        progress(0.55, desc="Transcrevendo (WhisperX large-v3)...")
-        original = run_whisperx(vocals, src)
+        progress(0.55, desc="Transcrevendo com WhisperX...")
+        original, detected_lang = run_whisperx(vocals, src)
+        new_state["detected_lang"] = detected_lang
 
         progress(0.80, desc="Traduzindo...")
-        translated = translate_text(original, src, tgt)
+        actual_src = detected_lang if src == "auto" else src
+        translated = translate_text(original, actual_src, tgt)
 
         progress(1.00, desc="Pronto!")
-        lang_det = src.upper() if src != "auto" else "AUTO"
-        return original, translated, f"✅ {lang_det} → {tgt.upper()} | WhisperX large-v3"
+        return original, translated, "Transcricao concluida - edite o texto se quiser e clique em Dublar", new_state
 
-    except Exception:
-        tb = traceback.format_exc()
-        shutil.rmtree(tmp, ignore_errors=True)
-        return "", "", f"❌ Erro:\n{tb[-800:]}"
+    except Exception as e:
+        cleanup_tmp(tmp)
+        raise gr.Error(str(e))
 
 
-def step_dub(translated_text, use_lipsync, ref_audio, progress=gr.Progress(track_tqdm=True)):
+def step_dub(translated_text, use_lipsync, ref_audio, session_state, progress=gr.Progress(track_tqdm=True)):
     if not translated_text or not translated_text.strip():
-        return None, None, "❌ Texto de tradução vazio — transcreva primeiro."
-    if "tmp" not in _S:
-        return None, None, "❌ Faça a transcrição primeiro."
+        raise gr.Error("Texto de traducao vazio.")
+    if not session_state or "tmp" not in session_state:
+        raise gr.Error("Faca a transcricao primeiro.")
 
-    tmp   = _S["tmp"]
-    video = _S["video"]
-    vocals = _S.get("vocals", "")
-    bg    = _S.get("bg")
+    tmp = session_state["tmp"]
+    video = session_state["video"]
+    vocals = session_state["vocals"]
+    bg = session_state["bg"]
 
     try:
-        progress(0.15, desc="Clonando voz (Fish Speech / XTTS)...")
-        ref    = ref_audio if ref_audio else vocals
+        progress(0.15, desc="Gerando voz dublada...")
+        ref = ref_audio if ref_audio else vocals
         dubbed = run_fish_speech(translated_text, ref, tmp)
 
-        # Preview de áudio ANTES do lipsync
-        preview_audio = dubbed
-
-        progress(0.40, desc="Mixando com fundo musical...")
+        progress(0.40, desc="Mixando audio...")
         mixed = mix_audio(dubbed, bg, tmp)
 
         if use_lipsync:
-            progress(0.65, desc="Sincronizando lábios (MuseTalk / Wav2Lip)...")
+            progress(0.65, desc="Sincronizando labios...")
             out = run_lipsync(video, mixed, tmp)
         else:
-            progress(0.65, desc="Substituindo áudio no vídeo...")
-            out = os.path.join(tmp, "rapidex_audio_only.mp4")
-            subprocess.run(
-                ["ffmpeg", "-y", "-i", video, "-i", mixed,
-                 "-c:v", "copy", "-map", "0:v:0", "-map", "1:a:0", "-shortest", out],
-                capture_output=True, check=True
-            )
+            progress(0.65, desc="Exportando video...")
+            out = os.path.join(tmp, "rapidex_output.mp4")
+            result = subprocess.run([
+                "ffmpeg", "-y", "-i", video, "-i", mixed,
+                "-c:v", "copy", "-map", "0:v:0", "-map", "1:a:0", "-shortest", out
+            ], capture_output=True, text=True)
+            if result.returncode != 0 or not os.path.exists(out):
+                raise RuntimeError(f"FFmpeg falhou ao exportar:\n{result.stderr}")
 
-        # Copia para output persistente
-        final = os.path.join(BASE, f"rapidex_output_{int(time.time())}.mp4")
+        progress(0.95, desc="Finalizando...")
+        final = f"/workspace/output_{int(time.time())}.mp4"
         shutil.copy(out, final)
+        cleanup_tmp(tmp)
+        session_state["tmp"] = None
+        return out, "Dublagem concluida!"
 
-        size_mb = os.path.getsize(final) / 1e6
-        mode = "MuseTalk/Wav2Lip" if use_lipsync else "Só áudio"
-        return preview_audio, final, f"✅ Concluído! {size_mb:.1f}MB — {mode}"
-
-    except Exception:
-        tb = traceback.format_exc()
-        return None, None, f"❌ Erro:\n{tb[-800:]}"
+    except Exception as e:
+        raise gr.Error(str(e))
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  INTERFACE
-# ═══════════════════════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────
+# IDIOMAS
+# ─────────────────────────────────────────
+
+LANGUAGES = {
+    "Detectar automaticamente": "auto",
+    "Portugues": "pt", "Ingles": "en", "Espanhol": "es",
+    "Frances": "fr", "Alemao": "de", "Italiano": "it",
+    "Japones": "ja", "Coreano": "ko", "Chines": "zh",
+    "Arabe": "ar", "Russo": "ru", "Hindi": "hi",
+    "Turco": "tr", "Holandes": "nl", "Polones": "pl",
+}
+
+# ─────────────────────────────────────────
+# CSS
+# ─────────────────────────────────────────
 
 CSS = """
-@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
-
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
 :root {
-  --bg:       #020409;
-  --surface:  #0b0f1a;
-  --elevated: #111827;
-  --border:   #1a2035;
-  --accent:   #6366f1;
-  --accent2:  #a855f7;
-  --accent3:  #ec4899;
-  --text:     #e2e8f0;
-  --muted:    #64748b;
-  --success:  #10b981;
-  --radius:   12px;
+  --bg: #020409; --surface: #0b0f1a; --border: #1a2035;
+  --accent: #6366f1; --accent2: #a855f7; --accent3: #ec4899;
+  --text: #e2e8f0; --muted: #64748b; --success: #10b981; --radius: 12px;
 }
-
-*, *::before, *::after { box-sizing: border-box; }
-
-body, .gradio-container {
-  background: var(--bg) !important;
-  font-family: 'Syne', sans-serif !important;
-  color: var(--text) !important;
-  max-width: 100% !important;
-}
-
-/* ─── Header ─── */
-.rx-header {
-  padding: 2rem 0 1.5rem;
-  text-align: center;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 1.5rem;
-  background: linear-gradient(180deg, #0d1025 0%, transparent 100%);
-}
-.rx-logo {
-  font-size: 2.2rem; font-weight: 800; letter-spacing: -0.02em;
-  background: linear-gradient(135deg, var(--accent), var(--accent2), var(--accent3));
-  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-}
-.rx-tagline {
-  font-size: 0.8rem; color: var(--muted);
-  font-family: 'JetBrains Mono', monospace; letter-spacing: 0.08em; margin-top: 4px;
-}
-.rx-badge {
-  display: inline-block; font-size: 0.65rem;
-  font-family: 'JetBrains Mono', monospace;
-  background: rgba(99,102,241,0.1); color: var(--accent);
-  border: 1px solid rgba(99,102,241,0.25);
-  padding: 3px 10px; border-radius: 20px; margin: 0 3px;
-}
-.rx-badge.gpu {
-  background: rgba(16,185,129,0.1); color: #10b981;
-  border-color: rgba(16,185,129,0.3);
-}
-
-/* ─── Pipeline ─── */
-.rx-pipeline {
-  display: flex; align-items: center; justify-content: center;
-  gap: 0; margin-bottom: 1.5rem; padding: 0 1rem; flex-wrap: wrap;
-}
-.rx-step {
-  display: flex; align-items: center; gap: 7px;
-  font-size: 0.68rem; font-family: 'JetBrains Mono', monospace;
-  color: var(--muted); padding: 7px 13px;
-  border: 1px solid var(--border); background: var(--surface);
-  border-radius: 8px; white-space: nowrap;
-}
-.rx-step-num {
-  font-size: 0.6rem; background: var(--border); color: var(--muted);
-  width: 16px; height: 16px; border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-}
-.rx-arrow { width: 24px; height: 1px; background: var(--border); }
-
-/* ─── Cards ─── */
-.rx-card-title {
-  font-size: 0.65rem; font-family: 'JetBrains Mono', monospace;
-  color: var(--muted); letter-spacing: 0.1em; text-transform: uppercase;
-  margin-bottom: 1rem; padding-bottom: 0.75rem; border-bottom: 1px solid var(--border);
-}
-
-/* ─── Buttons ─── */
-.gradio-container button.primary {
-  background: linear-gradient(135deg, var(--accent), var(--accent2)) !important;
-  border: none !important; border-radius: 8px !important;
-  font-family: 'Syne', sans-serif !important; font-weight: 700 !important;
-  transition: all 0.2s !important;
-}
-.gradio-container button.primary:hover {
-  transform: translateY(-1px) !important;
-  box-shadow: 0 6px 20px rgba(99,102,241,0.4) !important;
-  filter: brightness(1.08) !important;
-}
-.gradio-container button.secondary {
-  background: var(--surface) !important;
-  border: 1px solid var(--border) !important;
-  color: var(--text) !important; border-radius: 8px !important;
-  font-family: 'Syne', sans-serif !important;
-}
-.gradio-container button.secondary:hover {
-  border-color: var(--accent) !important;
-  color: var(--accent) !important;
-}
-
-/* ─── Inputs ─── */
-.gradio-container input, .gradio-container select,
-.gradio-container textarea, .gradio-container .wrap {
-  background: var(--bg) !important;
-  border: 1px solid var(--border) !important;
-  color: var(--text) !important; border-radius: 8px !important;
-  font-family: 'Syne', sans-serif !important;
-  transition: border-color 0.2s, box-shadow 0.2s !important;
-}
-.gradio-container input:focus, .gradio-container textarea:focus {
-  border-color: var(--accent) !important;
-  box-shadow: 0 0 0 2px rgba(99,102,241,0.15) !important;
-  outline: none !important;
-}
-
-/* ─── Labels ─── */
-.gradio-container label span {
-  color: var(--muted) !important; font-size: 0.72rem !important;
-  font-family: 'JetBrains Mono', monospace !important;
-  letter-spacing: 0.05em !important; text-transform: uppercase !important;
-}
-
-/* ─── Media ─── */
-.gradio-container video, .gradio-container audio {
-  border-radius: var(--radius) !important;
-  border: 1px solid var(--border) !important;
-}
-
-/* ─── Scrollbar ─── */
-::-webkit-scrollbar { width: 4px; }
-::-webkit-scrollbar-track { background: var(--bg); }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
-
-footer { display: none !important; }
+* { box-sizing: border-box; }
+body, .gradio-container { background: var(--bg) !important; font-family: 'Syne', sans-serif !important; color: var(--text) !important; }
+.rapidex-header { padding: 2rem 0 1.5rem; text-align: center; border-bottom: 1px solid var(--border); margin-bottom: 2rem; background: linear-gradient(180deg, #0d1025 0%, transparent 100%); }
+.rapidex-logo { font-size: 2.4rem; font-weight: 800; letter-spacing: -0.02em; background: linear-gradient(135deg, var(--accent), var(--accent2), var(--accent3)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+.rapidex-tagline { font-size: 0.85rem; color: var(--muted); font-family: 'JetBrains Mono', monospace; letter-spacing: 0.08em; margin-top: 4px; }
+.gpu-badge { display: inline-block; font-size: 0.7rem; font-family: 'JetBrains Mono', monospace; background: rgba(99,102,241,0.12); color: var(--accent); border: 1px solid rgba(99,102,241,0.3); padding: 3px 10px; border-radius: 20px; margin: 0 4px; }
+.pipeline-bar { display: flex; align-items: center; justify-content: center; gap: 0; margin-bottom: 2rem; padding: 0 1rem; }
+.step { display: flex; align-items: center; gap: 8px; font-size: 0.72rem; font-family: 'JetBrains Mono', monospace; color: var(--muted); padding: 8px 14px; border: 1px solid var(--border); background: var(--surface); border-radius: 8px; white-space: nowrap; }
+.step-num { font-size: 0.65rem; background: var(--border); color: var(--muted); width: 18px; height: 18px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
+.step-arrow { width: 28px; height: 1px; background: var(--border); }
+.card-title { font-size: 0.7rem; font-family: 'JetBrains Mono', monospace; color: var(--muted); letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 1rem; padding-bottom: 0.75rem; border-bottom: 1px solid var(--border); }
+button.primary { background: linear-gradient(135deg, var(--accent), var(--accent2)) !important; border: none !important; border-radius: 8px !important; font-family: 'Syne', sans-serif !important; font-weight: 600 !important; font-size: 0.95rem !important; padding: 0.75rem 2rem !important; }
+button.secondary { background: var(--surface) !important; border: 1px solid var(--border) !important; color: var(--text) !important; border-radius: 8px !important; font-family: 'Syne', sans-serif !important; }
+label { color: var(--muted) !important; font-size: 0.78rem !important; font-family: 'JetBrains Mono', monospace !important; letter-spacing: 0.05em !important; text-transform: uppercase !important; }
+input, select, textarea { background: var(--bg) !important; border: 1px solid var(--border) !important; color: var(--text) !important; border-radius: 8px !important; font-family: 'Syne', sans-serif !important; }
+input:focus, select:focus, textarea:focus { border-color: var(--accent) !important; box-shadow: 0 0 0 2px rgba(99,102,241,0.15) !important; outline: none !important; }
+.gr-panel, .gr-block, .gr-box { background: transparent !important; border: none !important; }
+::-webkit-scrollbar { width: 4px; } ::-webkit-scrollbar-track { background: var(--bg); } ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 """
 
-HEADER_HTML = f"""
-<div class="rx-header">
-  <div class="rx-logo">⚡ RAPIDEX IA</div>
-  <div class="rx-tagline">Traduza vídeos. Conecte o mundo.</div>
+HEADER = """
+<div class="rapidex-header">
+  <div class="rapidex-logo">RAPIDEX IA</div>
+  <div class="rapidex-tagline">Traduza videos. Conecte o mundo.</div>
   <div style="margin-top:12px;">
-    <span class="rx-badge">WhisperX large-v3</span>
-    <span class="rx-badge">Fish Speech</span>
-    <span class="rx-badge">Demucs</span>
-    <span class="rx-badge">MuseTalk</span>
-    <span class="rx-badge gpu">{GPU_NAME}</span>
+    <span class="gpu-badge">RUNPOD GPU</span>
+    <span class="gpu-badge">CUDA</span>
+    <span class="gpu-badge">v2.1</span>
   </div>
 </div>
-<div class="rx-pipeline">
-  <div class="rx-step"><span class="rx-step-num">1</span>Upload</div>
-  <div class="rx-arrow"></div>
-  <div class="rx-step"><span class="rx-step-num">2</span>Áudio</div>
-  <div class="rx-arrow"></div>
-  <div class="rx-step"><span class="rx-step-num">3</span>Transcrição</div>
-  <div class="rx-arrow"></div>
-  <div class="rx-step"><span class="rx-step-num">4</span>Tradução</div>
-  <div class="rx-arrow"></div>
-  <div class="rx-step"><span class="rx-step-num">5</span>Voz</div>
-  <div class="rx-arrow"></div>
-  <div class="rx-step"><span class="rx-step-num">6</span>Lipsync</div>
+<div class="pipeline-bar">
+  <div class="step"><span class="step-num">1</span>Video</div>
+  <div class="step-arrow"></div>
+  <div class="step"><span class="step-num">2</span>Audio</div>
+  <div class="step-arrow"></div>
+  <div class="step"><span class="step-num">3</span>Traducao</div>
+  <div class="step-arrow"></div>
+  <div class="step"><span class="step-num">4</span>Voz</div>
+  <div class="step-arrow"></div>
+  <div class="step"><span class="step-num">5</span>Lipsync</div>
 </div>
 """
 
-with gr.Blocks(css=CSS, title="RAPIDEX IA") as app:
-    gr.HTML(HEADER_HTML)
+# ─────────────────────────────────────────
+# INTERFACE
+# ─────────────────────────────────────────
+
+with gr.Blocks(title="RAPIDEX IA", css=CSS) as app:
+
+    gr.HTML(HEADER)
+    session_state = gr.State({})
 
     with gr.Row(equal_height=False):
 
-        # ── Coluna 1: Vídeo & Idiomas ─────────────────────────────────────────
-        with gr.Column(scale=1, min_width=280):
-            gr.HTML('<div class="rx-card-title">01 — Vídeo & Idiomas</div>')
-            video_input = gr.Video(label="Vídeo de entrada", height=240)
-            source_lang = gr.Dropdown(
-                choices=list(LANGUAGES.keys()),
-                value="Detectar automaticamente",
-                label="Idioma original"
-            )
-            target_lang = gr.Dropdown(
-                choices=[k for k in LANGUAGES if k != "Detectar automaticamente"],
-                value="Português",
-                label="Idioma de destino"
-            )
-            transcribe_btn = gr.Button("🔍 TRANSCREVER & TRADUZIR", variant="secondary", size="lg")
+        with gr.Column(scale=1):
+            gr.HTML('<div class="card-title">01 - Video e Idiomas</div>')
+            video_input = gr.Video(label="Video de entrada", sources=["upload"], height=240)
+            source_lang = gr.Dropdown(choices=list(LANGUAGES.keys()), value="Detectar automaticamente", label="Idioma original")
+            target_lang = gr.Dropdown(choices=[k for k in LANGUAGES if k != "Detectar automaticamente"], value="Portugues", label="Idioma de destino")
+            transcribe_btn = gr.Button("TRANSCREVER E TRADUZIR", variant="secondary", size="lg")
 
-        # ── Coluna 2: Texto ───────────────────────────────────────────────────
-        with gr.Column(scale=1, min_width=280):
-            gr.HTML('<div class="rx-card-title">02 — Revisar & Editar</div>')
-            original_out = gr.Textbox(
-                label="Transcrição original",
-                lines=5, interactive=False,
-                placeholder="Texto original aparece aqui após transcrição..."
-            )
-            translated_out = gr.Textbox(
-                label="Tradução — edite antes de dublar",
-                lines=5, interactive=True,
-                placeholder="Edite à vontade antes de clicar em Dublar..."
-            )
-            status_transcribe = gr.Textbox(label="Status", interactive=False, lines=2)
+        with gr.Column(scale=1):
+            gr.HTML('<div class="card-title">02 - Revisar e Editar Texto</div>')
+            original_out = gr.Textbox(label="Transcricao original", lines=5, interactive=False, placeholder="Texto original aparece aqui apos transcricao...")
+            translated_out = gr.Textbox(label="Traducao - edite antes de dublar", lines=5, interactive=True, placeholder="Traducao aparece aqui. Edite a vontade antes de dublar...")
+            status_out = gr.Textbox(label="Status", interactive=False, lines=1)
 
-        # ── Coluna 3: Voz + Lipsync + Resultado ──────────────────────────────
-        with gr.Column(scale=1, min_width=280):
-            gr.HTML('<div class="rx-card-title">03 — Voz & Resultado</div>')
-            ref_audio = gr.Audio(
-                label="Áudio de referência para clonagem (opcional)",
-                type="filepath"
-            )
-            gr.HTML('<p style="font-size:0.72rem;color:var(--muted);margin:4px 0 12px;">'
-                    'Sem referência: usa a voz original do vídeo.</p>')
-            use_lipsync = gr.Checkbox(label="Sincronizar lábios (MuseTalk → Wav2Lip)", value=True)
-            dub_btn = gr.Button("▶ DUBLAR VÍDEO", variant="primary", size="lg")
-            audio_preview = gr.Audio(label="Preview da voz clonada", type="filepath")
-            video_out = gr.Video(label="Vídeo dublado", height=230)
-            status_dub = gr.Textbox(label="Status", interactive=False, lines=2)
+        with gr.Column(scale=1):
+            gr.HTML('<div class="card-title">03 - Voz e Resultado</div>')
+            ref_audio = gr.Audio(label="Audio de referencia para clonagem (opcional)", sources=["upload"], type="filepath")
+            gr.HTML('<p style="font-size:0.78rem;color:var(--muted);margin:6px 0 14px;">Sem referencia: usa a voz original do video.</p>')
+            use_lipsync = gr.Checkbox(label="Sincronizar labios (MuseTalk)", value=True)
+            dub_btn = gr.Button("DUBLAR VIDEO", variant="primary", size="lg")
+            video_out = gr.Video(label="Video dublado", height=230)
 
-    # ── Bindings ──────────────────────────────────────────────────────────────
-    transcribe_btn.click(
-        fn=step_transcribe,
-        inputs=[video_input, source_lang, target_lang],
-        outputs=[original_out, translated_out, status_transcribe],
-        show_progress=True
-    )
-    dub_btn.click(
-        fn=step_dub,
-        inputs=[translated_out, use_lipsync, ref_audio],
-        outputs=[audio_preview, video_out, status_dub],
-        show_progress=True
-    )
+    transcribe_btn.click(fn=step_transcribe, inputs=[video_input, source_lang, target_lang, session_state], outputs=[original_out, translated_out, status_out, session_state], show_progress=True)
+    dub_btn.click(fn=step_dub, inputs=[translated_out, use_lipsync, ref_audio, session_state], outputs=[video_out, status_out], show_progress=True)
 
+# ─────────────────────────────────────────
+# LAUNCH
+# ─────────────────────────────────────────
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  LAUNCH
-# ═══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    app.launch(
-        server_name="0.0.0.0",
-        server_port=7860,
-        share=True,
-        show_error=True,
-        allowed_paths=[BASE, "/tmp"]
-    )
+    app.launch(server_name="0.0.0.0", server_port=7860, share=True, show_error=True)

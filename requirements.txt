@@ -1,18 +1,42 @@
-# RAPIDEX IA v3.2 - Dependencias
+# RAPIDEX IA v3.3 - Dependencias
+# Versoes testadas E2E em ambiente isolado (test_pipeline.py --real)
+
+# Core UI
 gradio>=4.44.0
+
+# AI - transcricao
 whisperx
-deep-translator
-demucs
-torch
-torchaudio
-transformers
-accelerate
+# WhisperX 3.8.5 quer torch~=2.8 e transformers>=4.48
+# transformers >= 4.55 quebra Coqui TTS (BeamSearchScorer removido)
+# Pinar pra faixa segura:
+transformers>=4.48.0,<4.55.0
 ctranslate2
+accelerate
+
+# AI - separacao de voz
+demucs
+
+# AI - audio I/O
+torch
+torchvision  # transformers usa torchvision.transforms - precisa ser COMPATIVEL com torch
+torchaudio
+
+# Traducao
+deep-translator
+
+# TTS fallback (sempre funciona, sem clonagem)
 gtts
-opencv-python-headless
+
+# Audio/video
 ffmpeg-python
 librosa
 scipy
-# Opcional - clonagem de voz de alta qualidade (Coqui XTTS v2)
-# Setar COQUI_TOS_AGREED=1 antes de instalar/rodar
+opencv-python-headless
+
+# HF Hub (download de modelos)
+huggingface_hub
+
+# Opcional - Coqui XTTS v2 para clonagem de voz.
+# Pode conflitar com transformers novos. Se quebrar, gTTS assume.
+# Ative descomentando:
 # TTS

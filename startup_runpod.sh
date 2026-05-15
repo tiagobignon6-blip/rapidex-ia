@@ -1,7 +1,8 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────────────────────
-# RAPIDEX IA v3.2 - startup_runpod.sh
+# RAPIDEX IA v3.3 - startup_runpod.sh
 # Instala TUDO e sobe o app. Rodar: bash startup_runpod.sh
+# Versoes pinadas com base em testes E2E reais.
 # ─────────────────────────────────────────────────────────────────────────────
 set -e
 
@@ -16,13 +17,22 @@ LOG="$WORKSPACE/rapidex.log"
 
 echo ""
 echo "╔══════════════════════════════════════════╗"
-echo "║     RAPIDEX IA v3.1 - Startup           ║"
+echo "║     RAPIDEX IA v3.3 - Startup           ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
 
-# ── 1. Python deps ────────────────────────────────────────────────────────────
+# ── 1. Python deps (versoes compativeis testadas) ─────────────────────────────
 echo "[1/6] Instalando dependencias Python..."
 pip install -q --upgrade pip
+
+# torch + torchvision + torchaudio precisam ser TRIPLET compativel.
+# Em RunPod com CUDA, geralmente vem pre-instalado. So instalamos se faltar.
+python -c "import torch, torchvision, torchaudio" 2>/dev/null || {
+  echo "  Instalando triplet torch CUDA..."
+  pip install -q torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 2>/dev/null \
+    || pip install -q torch torchvision torchaudio
+}
+
 pip install -q \
   "gradio>=4.44.0" \
   whisperx \
@@ -30,17 +40,19 @@ pip install -q \
   demucs \
   gtts \
   opencv-python-headless \
-  transformers \
+  "transformers>=4.48.0,<4.55.0" \
   accelerate \
   ctranslate2 \
-  torchaudio \
   ffmpeg-python \
   librosa \
   scipy \
-  2>/dev/null || true
+  huggingface_hub \
+  2>&1 | tail -5
 
-# Coqui TTS opcional (clonagem de voz de alta qualidade)
-pip install -q TTS 2>/dev/null || echo "  Coqui TTS nao instalado (opcional)"
+# Coqui TTS OPCIONAL - pode conflitar com transformers novos.
+# Se nao instalar, o pipeline cai pro gTTS automaticamente (sem clonagem mas funciona).
+pip install -q TTS 2>/dev/null && echo "  OK Coqui TTS (clonagem de voz disponivel)" \
+  || echo "  Coqui TTS nao instalado - usara gTTS (voz sintetica) como fallback"
 echo "  OK dependencias Python"
 
 # ── 2. FFmpeg ─────────────────────────────────────────────────────────────────

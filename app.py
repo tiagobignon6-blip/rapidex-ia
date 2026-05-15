@@ -53,6 +53,8 @@ from pipeline import (  # noqa: E402
     run_lipsync,
     cleanup as cleanup_tmp,
     OUTPUT_DIR,
+    DEVICE,
+    WHISPER_SIZE,
 )
 
 # Apelidos para compatibilidade com notebook de teste
@@ -60,6 +62,30 @@ run_fish_speech = run_tts
 
 # Pre-carrega WhisperX em background (nao bloqueia o boot da UI)
 threading.Thread(target=ModelManager.preload, daemon=True).start()
+
+
+def health_html():
+    """Renderiza badge de status do modelo (HTML pequeno, atualizado periodicamente)."""
+    status = ModelManager.status()
+    if status == "ready":
+        color, label = "#10b981", f"WHISPERX {WHISPER_SIZE} READY"
+    elif status == "loading":
+        color, label = "#f59e0b", f"WHISPERX {WHISPER_SIZE} CARREGANDO..."
+    elif status == "idle":
+        color, label = "#64748b", "WHISPERX OCIOSO"
+    else:
+        color, label = "#ef4444", f"WHISPERX FALHOU"
+    device_label = "GPU" if DEVICE == "cuda" else "CPU"
+    return (
+        f'<div style="display:flex;gap:8px;justify-content:center;align-items:center;'
+        f'font-family:JetBrains Mono,monospace;font-size:0.7rem;margin:8px 0;flex-wrap:wrap;">'
+        f'<span style="padding:3px 10px;border-radius:20px;'
+        f'background:rgba(99,102,241,0.12);color:#6366f1;'
+        f'border:1px solid rgba(99,102,241,0.3);">{device_label}</span>'
+        f'<span style="padding:3px 10px;border-radius:20px;'
+        f'background:{color}22;color:{color};border:1px solid {color}55;">{label}</span>'
+        f'</div>'
+    )
 
 # ─────────────────────────────────────────
 # STEP FUNCTIONS (com gr.State - thread-safe)
@@ -232,7 +258,15 @@ HEADER = """
 with gr.Blocks(title="RAPIDEX IA", css=CSS) as app:
 
     gr.HTML(HEADER)
+    health_badge = gr.HTML(health_html())
     session_state = gr.State({})
+
+    # Atualiza badge a cada 4s. gr.Timer existe a partir do gradio 4.36+
+    try:
+        _timer = gr.Timer(value=4)
+        _timer.tick(fn=health_html, outputs=[health_badge])
+    except (AttributeError, TypeError):
+        pass  # Gradio antigo - badge nao atualiza dinamicamente
 
     with gr.Row(equal_height=False):
 

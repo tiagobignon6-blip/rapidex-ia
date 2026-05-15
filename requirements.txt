@@ -1,5 +1,5 @@
-gradio>=4.0.0
-openai-whisper
+# RAPIDEX IA v3.0 - Dependências
+gradio>=4.44.0
 whisperx
 deep-translator
 demucs
@@ -9,6 +9,7 @@ transformers
 accelerate
 ctranslate2
 gtts
-opencv-python
-matplotlib
+opencv-python-headless
 ffmpeg-python
+# Opcional - clonagem de voz de alta qualidade (TTS Coqui)
+# TTS

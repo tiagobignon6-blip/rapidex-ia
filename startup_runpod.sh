@@ -1,11 +1,15 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────────────────────
-# RAPIDEX IA v3.1 - startup_runpod.sh
+# RAPIDEX IA v3.2 - startup_runpod.sh
 # Instala TUDO e sobe o app. Rodar: bash startup_runpod.sh
 # ─────────────────────────────────────────────────────────────────────────────
 set -e
 
-WORKSPACE="/workspace"
+export WORKSPACE="${WORKSPACE:-/workspace}"
+export COQUI_TOS_AGREED=1
+export PYTHONUNBUFFERED=1
+export TOKENIZERS_PARALLELISM=false
+
 REPO_URL="https://github.com/tiagobignon6-blip/rapidex-ia.git"
 REPO_DIR="$WORKSPACE/rapidex-ia"
 LOG="$WORKSPACE/rapidex.log"
@@ -55,6 +59,7 @@ else
 fi
 cp "$REPO_DIR/app.py"      "$WORKSPACE/app.py"
 cp "$REPO_DIR/pipeline.py" "$WORKSPACE/pipeline.py"
+# Garante que o python ache pipeline.py (mesmo dir do app.py)
 echo "  OK codigo atualizado"
 
 # ── 4. Wav2Lip (lipsync principal) ────────────────────────────────────────────

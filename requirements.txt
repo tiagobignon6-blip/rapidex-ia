@@ -1,4 +1,4 @@
-# RAPIDEX IA v3.0 - Dependências
+# RAPIDEX IA v3.2 - Dependencias
 gradio>=4.44.0
 whisperx
 deep-translator
@@ -11,5 +11,8 @@ ctranslate2
 gtts
 opencv-python-headless
 ffmpeg-python
-# Opcional - clonagem de voz de alta qualidade (TTS Coqui)
+librosa
+scipy
+# Opcional - clonagem de voz de alta qualidade (Coqui XTTS v2)
+# Setar COQUI_TOS_AGREED=1 antes de instalar/rodar
 # TTS

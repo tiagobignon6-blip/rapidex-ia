@@ -22,7 +22,7 @@ echo "╚═══════════════════════�
 echo ""
 
 # ── 1. Python deps (versoes compativeis testadas) ─────────────────────────────
-echo "[1/6] Instalando dependencias Python..."
+echo "[1/7] Instalando dependencias Python..."
 pip install -q --upgrade pip
 
 # torch + torchvision + torchaudio precisam ser TRIPLET compativel.
@@ -56,14 +56,14 @@ pip install -q TTS 2>/dev/null && echo "  OK Coqui TTS (clonagem de voz disponiv
 echo "  OK dependencias Python"
 
 # ── 2. FFmpeg ─────────────────────────────────────────────────────────────────
-echo "[2/6] Verificando FFmpeg..."
+echo "[2/7] Verificando FFmpeg..."
 if ! command -v ffmpeg &>/dev/null; then
   apt-get install -y -q ffmpeg 2>/dev/null || true
 fi
 command -v ffmpeg &>/dev/null && echo "  OK FFmpeg" || echo "  AVISO: FFmpeg nao encontrado"
 
 # ── 3. Codigo do GitHub ───────────────────────────────────────────────────────
-echo "[3/6] Atualizando codigo do GitHub..."
+echo "[3/7] Atualizando codigo do GitHub..."
 if [ -d "$REPO_DIR/.git" ]; then
   cd "$REPO_DIR" && git pull --quiet && cd "$WORKSPACE"
 else
@@ -75,7 +75,7 @@ cp "$REPO_DIR/pipeline.py" "$WORKSPACE/pipeline.py"
 echo "  OK codigo atualizado"
 
 # ── 4. Wav2Lip (lipsync principal) ────────────────────────────────────────────
-echo "[4/6] Instalando Wav2Lip..."
+echo "[4/7] Instalando Wav2Lip..."
 WAV2LIP_DIR="$WORKSPACE/Wav2Lip"
 WAV2LIP_CK="$WAV2LIP_DIR/checkpoints/wav2lip_gan.pth"
 WAV2LIP_SFD="$WAV2LIP_DIR/face_detection/detection/sfd/s3fd.pth"
@@ -129,13 +129,85 @@ fi
 cd "$WORKSPACE"
 echo "  OK Wav2Lip instalado"
 
-# ── 5. Pastas e modelos ───────────────────────────────────────────────────────
-echo "[5/6] Preparando estrutura de pastas..."
+# ── 5. LatentSync (lipsync primario - ByteDance dez/2024) ─────────────────────
+echo "[5/7] Instalando LatentSync..."
+LATENTSYNC_DIR="$WORKSPACE/LatentSync"
+LATENTSYNC_CK="$LATENTSYNC_DIR/checkpoints/latentsync_unet.pt"
+
+if [ ! -d "$LATENTSYNC_DIR/.git" ]; then
+  echo "  Clonando LatentSync (ByteDance)..."
+  git clone --quiet --depth 1 https://github.com/bytedance/LatentSync.git "$LATENTSYNC_DIR"
+fi
+
+cd "$LATENTSYNC_DIR"
+
+# Requirements do LatentSync (mais leve que MuseTalk)
+pip install -q -r requirements.txt 2>/dev/null \
+  || pip install -q diffusers==0.32.2 transformers omegaconf accelerate einops imageio imageio-ffmpeg insightface lpips mediapipe 2>/dev/null \
+  || true
+
+mkdir -p checkpoints checkpoints/whisper
+
+# Baixar checkpoint do LatentSync (~1.5GB - so na primeira vez)
+if [ ! -f "$LATENTSYNC_CK" ] || [ "$(stat -c%s "$LATENTSYNC_CK" 2>/dev/null || echo 0)" -lt 1000000000 ]; then
+  echo "  Baixando latentsync_unet.pt (~1.5GB, so primeira vez)..."
+  python3 - <<PYEOF || echo "  AVISO: falha no download via HF; tentando wget"
+import os
+try:
+    from huggingface_hub import hf_hub_download
+    hf_hub_download(
+        repo_id="ByteDance/LatentSync-1.5",
+        filename="latentsync_unet.pt",
+        local_dir="$LATENTSYNC_DIR/checkpoints",
+    )
+    print("  OK latentsync_unet.pt via HuggingFace")
+except Exception as e:
+    print(f"  HF Hub falhou: {e}")
+    raise SystemExit(1)
+PYEOF
+
+  # Fallback wget se HF falhar
+  if [ ! -f "$LATENTSYNC_CK" ] || [ "$(stat -c%s "$LATENTSYNC_CK" 2>/dev/null || echo 0)" -lt 1000000000 ]; then
+    wget -q --show-progress \
+      "https://huggingface.co/ByteDance/LatentSync-1.5/resolve/main/latentsync_unet.pt" \
+      -O "$LATENTSYNC_CK" 2>/dev/null \
+      || echo "  AVISO: latentsync_unet.pt nao baixado - cai pra Wav2Lip"
+  fi
+else
+  echo "  OK latentsync_unet.pt ja presente"
+fi
+
+# Baixa Whisper tiny (usado pelo audio encoder do LatentSync)
+WHISPER_TINY="$LATENTSYNC_DIR/checkpoints/whisper/tiny.pt"
+if [ ! -f "$WHISPER_TINY" ]; then
+  echo "  Baixando whisper tiny.pt (auxiliar do LatentSync)..."
+  python3 - <<PYEOF 2>/dev/null || true
+from huggingface_hub import hf_hub_download
+try:
+    hf_hub_download(
+        repo_id="ByteDance/LatentSync-1.5",
+        filename="whisper/tiny.pt",
+        local_dir="$LATENTSYNC_DIR/checkpoints",
+    )
+except Exception:
+    import urllib.request
+    urllib.request.urlretrieve(
+        "https://openaipublic.azureedge.net/main/whisper/models/65147644a518d12f04e32d6f3b26facc3f8dd46e7e3af72b0d4e6f5b3a6c5f25/tiny.pt",
+        "$WHISPER_TINY",
+    )
+PYEOF
+fi
+
+cd "$WORKSPACE"
+[ -f "$LATENTSYNC_CK" ] && echo "  OK LatentSync pronto" || echo "  AVISO: LatentSync incompleto - cai pra Wav2Lip"
+
+# ── 6. Pastas e modelos ───────────────────────────────────────────────────────
+echo "[6/7] Preparando estrutura de pastas..."
 mkdir -p "$WORKSPACE/outputs" "$WORKSPACE/models"
 echo "  OK estrutura pronta"
 
-# ── 6. Sobe o app ─────────────────────────────────────────────────────────────
-echo "[6/6] Iniciando RAPIDEX IA..."
+# ── 7. Sobe o app ─────────────────────────────────────────────────────────────
+echo "[7/7] Iniciando RAPIDEX IA..."
 echo ""
 
 cd "$WORKSPACE"

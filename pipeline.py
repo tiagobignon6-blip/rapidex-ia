@@ -52,6 +52,8 @@ MODEL_DIR    = WORKSPACE / "models"
 MUSETALK     = WORKSPACE / "MuseTalk"
 WAV2LIP      = WORKSPACE / "Wav2Lip"
 WAV2LIP_CK   = WAV2LIP / "checkpoints" / "wav2lip_gan.pth"
+LATENTSYNC   = WORKSPACE / "LatentSync"
+LATENTSYNC_CK = LATENTSYNC / "checkpoints" / "latentsync_unet.pt"
 WHISPER_SIZE = os.environ.get("WHISPER_SIZE", "large-v3")
 DEMUCS_MODEL = os.environ.get("DEMUCS_MODEL", "htdemucs")
 MAX_CHARS    = 4_500
@@ -536,43 +538,76 @@ def mix_audio(voice, bg, out_dir):
 
 # ── LIP SYNC ───────────────────────────────────────────────────────────────────
 
-def _find_musetalk_script():
-    """MuseTalk tem layouts diferentes entre versoes. Tenta os caminhos comuns."""
-    candidates = [
-        MUSETALK / "scripts" / "inference.py",
-        MUSETALK / "inference.py",
-        MUSETALK / "realtime_inference.py",
-        MUSETALK / "scripts" / "realtime_inference.py",
+def _try_latentsync(video, audio, out, log_prefix="LatentSync"):
+    """LatentSync (ByteDance, 2024) - primary lipsync engine.
+    Retorna o caminho de saida se funcionar, None caso contrario.
+    """
+    if not LATENTSYNC.is_dir() or not LATENTSYNC_CK.exists():
+        log.info(f"{log_prefix} indisponivel (LatentSync={LATENTSYNC.is_dir()} ckpt={LATENTSYNC_CK.exists()})")
+        return None
+
+    # Procura o config do unet (path padrao do repo oficial)
+    config_candidates = [
+        LATENTSYNC / "configs" / "unet" / "stage2.yaml",
+        LATENTSYNC / "configs" / "unet" / "stage2_512.yaml",
+        LATENTSYNC / "configs" / "unet" / "second_stage.yaml",
     ]
-    for c in candidates:
-        if c.exists():
-            return c
+    config_path = next((c for c in config_candidates if c.exists()), None)
+
+    # Tenta padroes diferentes de CLI (repo evolui)
+    base_args = [
+        "--video_path", video,
+        "--audio_path", audio,
+        "--video_out_path", out,
+        "--inference_ckpt_path", str(LATENTSYNC_CK),
+        "--inference_steps", "20",
+        "--guidance_scale", "1.5",
+        "--seed", "1247",
+    ]
+    if config_path:
+        base_args = ["--unet_config_path", str(config_path)] + base_args
+
+    cmd_variants = [
+        [PYBIN, "-m", "scripts.inference"] + base_args,
+        [PYBIN, str(LATENTSYNC / "scripts" / "inference.py")] + base_args,
+        [PYBIN, str(LATENTSYNC / "inference.py")] + base_args,
+    ]
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = f"{LATENTSYNC}:{env.get('PYTHONPATH', '')}"
+
+    for cmd in cmd_variants:
+        # Pula variantes cujo arquivo nao existe
+        if cmd[1] != "-m" and not os.path.exists(cmd[1]):
+            continue
+        try:
+            r = subprocess.run(
+                cmd,
+                capture_output=True, text=True,
+                cwd=str(LATENTSYNC),
+                env=env,
+                timeout=1800,
+            )
+            if r.returncode == 0 and _valid_mp4(out):
+                log.info(f"{log_prefix} OK")
+                return out
+            log.warning(f"{log_prefix} variant falhou (rc={r.returncode}): {r.stderr[-300:]}")
+        except subprocess.TimeoutExpired:
+            log.warning(f"{log_prefix} timeout 1800s")
+            return None
+        except Exception as e:
+            log.warning(f"{log_prefix} excecao: {type(e).__name__}: {e}")
+
     return None
 
 
-def run_lipsync(video, audio, out_dir):
-    """Ordem: MuseTalk -> Wav2Lip -> FFmpeg (troca so o audio, sempre funciona)."""
-    out = os.path.join(out_dir, "lipsync.mp4")
+def _try_wav2lip(video, audio, out, log_prefix="Wav2Lip"):
+    """Wav2Lip fallback. Retorna caminho ou None."""
+    if not (WAV2LIP.is_dir() and WAV2LIP_CK.exists()):
+        log.info(f"{log_prefix} indisponivel")
+        return None
 
-    # MuseTalk (melhor qualidade)
-    musetalk_script = _find_musetalk_script()
-    if musetalk_script:
-        r = subprocess.run(
-            [PYBIN, str(musetalk_script),
-             "--video_path", video,
-             "--audio_path", audio,
-             "--output_path", out,
-             "--bbox_shift", "0"],
-            capture_output=True, text=True,
-            cwd=str(MUSETALK), timeout=1200,
-        )
-        if r.returncode == 0 and _valid_mp4(out):
-            log.info("MuseTalk OK")
-            return out
-        log.warning(f"MuseTalk falhou: {r.stderr[-300:]}")
-
-    # Wav2Lip (estavel, bem testado)
-    if WAV2LIP.is_dir() and WAV2LIP_CK.exists():
+    try:
         r = subprocess.run(
             [PYBIN, str(WAV2LIP / "inference.py"),
              "--checkpoint_path", str(WAV2LIP_CK),
@@ -586,12 +621,52 @@ def run_lipsync(video, audio, out_dir):
             cwd=str(WAV2LIP), timeout=1200,
         )
         if r.returncode == 0 and _valid_mp4(out):
-            log.info("Wav2Lip OK")
+            log.info(f"{log_prefix} OK")
             return out
-        log.warning(f"Wav2Lip falhou: {r.stderr[-300:]}")
+        log.warning(f"{log_prefix} falhou (rc={r.returncode}): {r.stderr[-300:]}")
+    except subprocess.TimeoutExpired:
+        log.warning(f"{log_prefix} timeout 1200s")
+    except Exception as e:
+        log.warning(f"{log_prefix} excecao: {type(e).__name__}: {e}")
+    return None
 
-    # Fallback: substituir audio sem mover labios
-    log.warning("Lipsync indisponivel - substituindo apenas o audio")
+
+def _try_musetalk(video, audio, out, log_prefix="MuseTalk"):
+    """MuseTalk fallback (frequentemente quebrado por mudancas no repo)."""
+    candidates = [
+        MUSETALK / "scripts" / "inference.py",
+        MUSETALK / "inference.py",
+        MUSETALK / "realtime_inference.py",
+        MUSETALK / "scripts" / "realtime_inference.py",
+    ]
+    script = next((c for c in candidates if c.exists()), None)
+    if not script:
+        log.info(f"{log_prefix} indisponivel")
+        return None
+
+    try:
+        r = subprocess.run(
+            [PYBIN, str(script),
+             "--video_path", video,
+             "--audio_path", audio,
+             "--output_path", out,
+             "--bbox_shift", "0"],
+            capture_output=True, text=True,
+            cwd=str(MUSETALK), timeout=1200,
+        )
+        if r.returncode == 0 and _valid_mp4(out):
+            log.info(f"{log_prefix} OK")
+            return out
+        log.warning(f"{log_prefix} falhou (rc={r.returncode}): {r.stderr[-300:]}")
+    except subprocess.TimeoutExpired:
+        log.warning(f"{log_prefix} timeout 1200s")
+    except Exception as e:
+        log.warning(f"{log_prefix} excecao: {type(e).__name__}: {e}")
+    return None
+
+
+def _ffmpeg_audio_swap(video, audio, out):
+    """Fallback final: troca SO o audio (boca NAO mexe). Sempre funciona."""
     r = subprocess.run(
         ["ffmpeg", "-y", "-i", video, "-i", audio,
          "-c:v", "copy",
@@ -600,7 +675,7 @@ def run_lipsync(video, audio, out_dir):
         capture_output=True, text=True, timeout=300,
     )
     if r.returncode != 0 or not _valid_mp4(out):
-        # Se o copy falhar (codec incompativel), re-encoda video
+        # Re-encoda se -c:v copy falhar (codec incompativel)
         r2 = subprocess.run(
             ["ffmpeg", "-y", "-i", video, "-i", audio,
              "-c:v", "libx264", "-preset", "fast", "-crf", "20",
@@ -611,6 +686,32 @@ def run_lipsync(video, audio, out_dir):
         if r2.returncode != 0 or not _valid_mp4(out):
             raise RuntimeError(f"FFmpeg fallback final: {r2.stderr[-300:]}")
     return out
+
+
+def run_lipsync(video, audio, out_dir):
+    """Ordem: LatentSync -> Wav2Lip -> MuseTalk -> FFmpeg (so troca audio).
+    LatentSync (ByteDance, dez/2024) e o primario - mais robusto que MuseTalk/Wav2Lip.
+    """
+    out = os.path.join(out_dir, "lipsync.mp4")
+
+    # 1. LatentSync - PRIMARIO (qualidade comparavel a APIs comerciais)
+    result = _try_latentsync(video, audio, out)
+    if result:
+        return result
+
+    # 2. Wav2Lip - estavel ha anos, fallback confiavel
+    result = _try_wav2lip(video, audio, out)
+    if result:
+        return result
+
+    # 3. MuseTalk - se ainda estiver instalado
+    result = _try_musetalk(video, audio, out)
+    if result:
+        return result
+
+    # 4. Ultimo recurso: troca audio sem mover boca
+    log.warning("Todos os engines de lipsync falharam - apenas trocando audio (boca nao mexe)")
+    return _ffmpeg_audio_swap(video, audio, out)
 
 
 def _valid_mp4(p):

@@ -55,12 +55,22 @@ pip install -q TTS 2>/dev/null && echo "  OK Coqui TTS (clonagem de voz disponiv
   || echo "  Coqui TTS nao instalado - usara gTTS (voz sintetica) como fallback"
 echo "  OK dependencias Python"
 
-# ── 2. FFmpeg ─────────────────────────────────────────────────────────────────
+# ── 2. FFmpeg (OBRIGATORIO - sem ele nada funciona) ──────────────────────────
 echo "[2/7] Verificando FFmpeg..."
 if ! command -v ffmpeg &>/dev/null; then
-  apt-get install -y -q ffmpeg 2>/dev/null || true
+  echo "  Instalando ffmpeg via apt..."
+  apt-get update -q 2>&1 | tail -2
+  apt-get install -y -q ffmpeg 2>&1 | tail -5
 fi
-command -v ffmpeg &>/dev/null && echo "  OK FFmpeg" || echo "  AVISO: FFmpeg nao encontrado"
+if command -v ffmpeg &>/dev/null; then
+  echo "  OK FFmpeg ($(ffmpeg -version 2>&1 | head -1 | awk '{print $3}'))"
+else
+  echo ""
+  echo "  ERRO CRITICO: ffmpeg nao instalou."
+  echo "  Tente manualmente: apt-get update && apt-get install -y ffmpeg"
+  echo "  Sem ffmpeg, nada do RAPIDEX vai funcionar. Saindo."
+  exit 1
+fi
 
 # ── 3. Codigo do GitHub ───────────────────────────────────────────────────────
 echo "[3/7] Atualizando codigo do GitHub..."

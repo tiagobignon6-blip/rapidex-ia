@@ -155,8 +155,9 @@ fi
 cd "$LATENTSYNC_DIR"
 
 # Requirements do LatentSync - libs OBRIGATORIAS nao listadas no requirements.txt deles:
-#   decord (video reader), kornia (image transforms), insightface, lpips, mediapipe
-pip install -q decord kornia insightface lpips mediapipe scenedetect 2>&1 | tail -3 || true
+#   decord (video reader), kornia (image transforms), DeepCache (otimizacao),
+#   insightface + onnxruntime-gpu (face detect), lpips, mediapipe
+pip install -q decord kornia DeepCache onnxruntime-gpu insightface lpips mediapipe scenedetect 2>&1 | tail -3 || true
 pip install -q -r requirements.txt 2>/dev/null \
   || pip install -q diffusers==0.32.2 omegaconf accelerate einops imageio imageio-ffmpeg 2>/dev/null \
   || true

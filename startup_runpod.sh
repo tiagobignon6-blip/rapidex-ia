@@ -97,8 +97,8 @@ fi
 
 cd "$WAV2LIP_DIR"
 
-# Wav2Lip precisa de librosa<0.10.3 (versoes novas quebraram mel() positional args)
-pip install -q "librosa==0.10.2.post1" 2>&1 | tail -3 || true
+# Wav2Lip precisa de librosa 0.9.x (0.10+ removeu positional args do mel())
+pip install -q "librosa==0.9.2" 2>&1 | tail -3 || true
 
 # Instalar requirements do Wav2Lip (sem upgrade do librosa)
 pip install -q -r requirements.txt 2>/dev/null || \
@@ -154,11 +154,11 @@ fi
 
 cd "$LATENTSYNC_DIR"
 
-# Requirements do LatentSync (mais leve que MuseTalk)
-# decord = video reader (OBRIGATORIO - LatentSync importa direto)
-pip install -q decord 2>&1 | tail -2 || true
+# Requirements do LatentSync - libs OBRIGATORIAS nao listadas no requirements.txt deles:
+#   decord (video reader), kornia (image transforms), insightface, lpips, mediapipe
+pip install -q decord kornia insightface lpips mediapipe scenedetect 2>&1 | tail -3 || true
 pip install -q -r requirements.txt 2>/dev/null \
-  || pip install -q decord diffusers==0.32.2 transformers omegaconf accelerate einops imageio imageio-ffmpeg insightface lpips mediapipe 2>/dev/null \
+  || pip install -q diffusers==0.32.2 omegaconf accelerate einops imageio imageio-ffmpeg 2>/dev/null \
   || true
 
 mkdir -p checkpoints checkpoints/whisper

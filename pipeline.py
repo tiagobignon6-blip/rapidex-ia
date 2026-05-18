@@ -801,21 +801,32 @@ def _detect_face_segments(video_path, sample_fps=3, min_segment_sec=0.7, merge_g
 
 
 def _ffmpeg_extract_segment(input_path, start, end, out_path, is_video=True):
-    """Extrai trecho [start, end) de video OU audio."""
+    """Extrai trecho [start, end) de video OU audio.
+    Usa -ss APOS -i (mais lento mas evita problemas de B-frame em segmentos curtos)."""
+    if end - start < 0.1:
+        log.warning(f"Segmento muito curto ({end-start:.2f}s) - pulando")
+        return None
+
     if is_video:
-        cmd = ["ffmpeg", "-y", "-ss", f"{start:.3f}", "-to", f"{end:.3f}",
+        cmd = ["ffmpeg", "-y",
                "-i", input_path,
+               "-ss", f"{start:.3f}", "-to", f"{end:.3f}",
                "-c:v", "libx264", "-preset", "fast", "-crf", "20",
-               "-c:a", "aac", "-avoid_negative_ts", "make_zero",
+               "-c:a", "aac", "-pix_fmt", "yuv420p",
+               "-avoid_negative_ts", "make_zero",
                out_path]
     else:
-        cmd = ["ffmpeg", "-y", "-ss", f"{start:.3f}", "-to", f"{end:.3f}",
+        cmd = ["ffmpeg", "-y",
                "-i", input_path,
+               "-ss", f"{start:.3f}", "-to", f"{end:.3f}",
                "-ac", "1", "-ar", str(SR),
                out_path]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-    if r.returncode != 0 or not os.path.exists(out_path):
-        log.warning(f"ffmpeg extract segment falhou: {r.stderr[-200:]}")
+    if r.returncode != 0:
+        log.warning(f"ffmpeg extract segment rc={r.returncode}: {r.stderr[-400:]}")
+        return None
+    if not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
+        log.warning(f"ffmpeg extract segment output invalido: {out_path}")
         return None
     return out_path
 
@@ -877,16 +888,30 @@ def run_lipsync_segmented(video, audio, out_dir, engine_fns=None):
         log.warning("Nenhum segmento com face detectado - cai pro audio swap")
         return _ffmpeg_audio_swap(video, audio, out_final)
 
-    # Cobertura completa: intercala segmentos com_face com sem_face
-    full_timeline = []  # [(start, end, has_face), ...]
+    # Cobertura completa: intercala segmentos com_face com sem_face.
+    # Trechos sem face menores que 0.5s sao absorvidos pelo segmento de face adjacente
+    # (ffmpeg + libx264 falham em clipes muito curtos).
+    MIN_NOFACE = 0.5
+    full_timeline = []
     cursor = 0.0
     for (start, end) in face_segments:
-        if start > cursor + 0.05:
+        gap = start - cursor
+        if gap >= MIN_NOFACE:
             full_timeline.append((cursor, start, False))
+        else:
+            # gap minusculo no inicio: estende o segmento de face pra absorver
+            start = cursor
         full_timeline.append((start, end, True))
         cursor = end
-    if cursor < duration - 0.05:
+    if duration - cursor >= MIN_NOFACE:
         full_timeline.append((cursor, duration, False))
+    elif full_timeline and full_timeline[-1][2]:
+        # gap minusculo no final: estende o ultimo face segment ate o fim
+        s, _, hf = full_timeline[-1]
+        full_timeline[-1] = (s, duration, hf)
+
+    log.info(f"Timeline: {len(full_timeline)} segmentos -> "
+             + ", ".join(f"{'F' if hf else '_'}{e-s:.1f}s" for s,e,hf in full_timeline))
 
     parts_dir = os.path.join(out_dir, "_segments")
     os.makedirs(parts_dir, exist_ok=True)

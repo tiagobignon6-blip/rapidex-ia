@@ -214,6 +214,25 @@ except Exception:
 PYEOF
 fi
 
+# Baixa SD-VAE (stabilityai/sd-vae-ft-mse) - LatentSync usa de_pretrained
+# que cai no HF cache. Pre-baixamos pra garantir.
+SDVAE_DIR="$LATENTSYNC_DIR/checkpoints/stabilityai/sd-vae-ft-mse"
+if [ ! -f "$SDVAE_DIR/diffusion_pytorch_model.bin" ] && [ ! -f "$SDVAE_DIR/diffusion_pytorch_model.safetensors" ]; then
+  echo "  Baixando stabilityai/sd-vae-ft-mse (~335MB)..."
+  python3 - <<PYEOF 2>&1 | tail -3
+from huggingface_hub import snapshot_download
+try:
+    snapshot_download(
+        repo_id="stabilityai/sd-vae-ft-mse",
+        local_dir="$SDVAE_DIR",
+        ignore_patterns=["*.md", "*.png", "*.jpg"],
+    )
+    print("  OK SD-VAE em $SDVAE_DIR")
+except Exception as e:
+    print(f"  AVISO SD-VAE: {e}")
+PYEOF
+fi
+
 cd "$WORKSPACE"
 [ -f "$LATENTSYNC_CK" ] && echo "  OK LatentSync pronto" || echo "  AVISO: LatentSync incompleto - cai pra Wav2Lip"
 

@@ -921,6 +921,56 @@ def test_e2e_real_pipeline(report):
             return False
 
 
+def test_face_segmentation_helpers(report):
+    """Verifica que as funcoes de segmentacao por face existem e ffmpeg helpers funcionam."""
+    print(f"\n{C.BOLD}[20b] FACE SEGMENTATION HELPERS{C.END}")
+    import pipeline
+
+    # Funcoes devem existir
+    for fn_name in ["_detect_face_segments", "_ffmpeg_extract_segment",
+                    "_ffmpeg_concat", "run_lipsync_segmented", "_get_video_duration"]:
+        if hasattr(pipeline, fn_name):
+            report.add(f"pipeline.{fn_name} existe", "PASS", "")
+        else:
+            report.add(f"pipeline.{fn_name} existe", "FAIL", "ausente")
+
+    # Testa duracao
+    with temp_dir() as d:
+        video = os.path.join(d, "v.mp4")
+        make_test_video(video, duration=3)
+        dur = pipeline._get_video_duration(video)
+        if 2.5 <= dur <= 3.5:
+            report.add("_get_video_duration retorna valor correto", "PASS", f"{dur:.2f}s")
+        else:
+            report.add("_get_video_duration retorna valor correto", "FAIL", f"{dur}")
+
+        # Testa extracao de segmento
+        seg_video = os.path.join(d, "seg.mp4")
+        out = pipeline._ffmpeg_extract_segment(video, 0.5, 2.0, seg_video, is_video=True)
+        if out and os.path.exists(out):
+            seg_dur = pipeline._get_video_duration(seg_video)
+            if 1.0 <= seg_dur <= 2.0:
+                report.add("_ffmpeg_extract_segment corta corretamente", "PASS", f"{seg_dur:.2f}s")
+            else:
+                report.add("_ffmpeg_extract_segment corta corretamente", "FAIL", f"{seg_dur}")
+        else:
+            report.add("_ffmpeg_extract_segment corta corretamente", "FAIL", "")
+
+        # Testa concat
+        out_path = os.path.join(d, "concat.mp4")
+        result = pipeline._ffmpeg_concat([seg_video, seg_video], out_path)
+        if result and os.path.exists(result):
+            concat_dur = pipeline._get_video_duration(result)
+            if 2.0 <= concat_dur <= 4.0:
+                report.add("_ffmpeg_concat junta sequencialmente", "PASS", f"{concat_dur:.2f}s")
+            else:
+                report.add("_ffmpeg_concat junta sequencialmente", "FAIL", f"{concat_dur}")
+        else:
+            report.add("_ffmpeg_concat junta sequencialmente", "FAIL", "")
+
+    return True
+
+
 def test_subprocess_timeout_killed(report):
     """Subprocess com timeout deve matar processo que trava."""
     print(f"\n{C.BOLD}[20] SUBPROCESS TIMEOUT EFETIVO{C.END}")
@@ -1036,6 +1086,7 @@ def main():
     test_user_edits_text_between_transcribe_and_generate(report)
     test_translation_long_text(report)
     test_multiple_target_languages(report)
+    test_face_segmentation_helpers(report)
     test_subprocess_timeout_killed(report)
     test_e2e_real_pipeline(report)
 

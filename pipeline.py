@@ -688,28 +688,298 @@ def _ffmpeg_audio_swap(video, audio, out):
     return out
 
 
+# ── LIPSYNC SEGMENTADO (pra videos com rosto nem-sempre-visivel) ──────────────
+
+def _get_video_duration(path):
+    """Duracao do video em segundos via ffprobe."""
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, timeout=15,
+        )
+        return float(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else 0.0
+    except Exception:
+        return 0.0
+
+
+def _detect_face_segments(video_path, sample_fps=3, min_segment_sec=0.7, merge_gap_sec=0.4):
+    """Escaneia o video amostrando `sample_fps` quadros por segundo.
+    Retorna lista de (start_sec, end_sec) onde face foi detectada.
+    Segmentos < min_segment_sec sao descartados.
+    Gaps < merge_gap_sec entre segmentos sao fundidos.
+    """
+    try:
+        import cv2
+    except ImportError:
+        log.warning("OpenCV ausente - segmentacao por face indisponivel")
+        return []
+
+    # Tenta MediaPipe (melhor); cai pra Haar cascade se nao tiver
+    detector_fn = None
+    try:
+        import mediapipe as mp
+        mp_face = mp.solutions.face_detection.FaceDetection(
+            model_selection=1, min_detection_confidence=0.5,
+        )
+        def detect_mp(frame_bgr):
+            rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            res = mp_face.process(rgb)
+            return bool(res and res.detections)
+        detector_fn = detect_mp
+        log.info("Face detection: MediaPipe")
+    except Exception as e:
+        log.warning(f"MediaPipe indisponivel ({e}) - usando Haar cascade")
+        cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        cascade = cv2.CascadeClassifier(cascade_path)
+        def detect_haar(frame_bgr):
+            gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+            faces = cascade.detectMultiScale(gray, scaleFactor=1.2, minNeighbors=5, minSize=(40, 40))
+            return len(faces) > 0
+        detector_fn = detect_haar
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        log.warning(f"OpenCV nao conseguiu abrir {video_path}")
+        return []
+
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    duration = total_frames / fps if fps > 0 else 0
+    step = max(1, int(fps / sample_fps))
+
+    # Amostra frames e marca onde tem face
+    samples = []  # lista de (t_sec, has_face)
+    frame_idx = 0
+    while True:
+        if frame_idx >= total_frames:
+            break
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ok, frame = cap.read()
+        if not ok:
+            break
+        t_sec = frame_idx / fps
+        has_face = detector_fn(frame)
+        samples.append((t_sec, has_face))
+        frame_idx += step
+    cap.release()
+
+    if not samples:
+        return []
+
+    # Compoe segmentos contiguos com face
+    raw_segments = []
+    current_start = None
+    sample_period = step / fps
+    for t, has in samples:
+        if has and current_start is None:
+            current_start = t
+        elif not has and current_start is not None:
+            raw_segments.append((current_start, t))
+            current_start = None
+    if current_start is not None:
+        raw_segments.append((current_start, samples[-1][0] + sample_period))
+
+    # Funde gaps pequenos
+    merged = []
+    for start, end in raw_segments:
+        if merged and start - merged[-1][1] <= merge_gap_sec:
+            merged[-1] = (merged[-1][0], end)
+        else:
+            merged.append((start, end))
+
+    # Descarta segmentos curtos
+    final = [(s, e) for (s, e) in merged if (e - s) >= min_segment_sec]
+
+    # Adiciona uma pequena folga (~0.15s) pra captar transicoes melhor
+    pad = 0.15
+    final = [(max(0, s - pad), min(duration, e + pad)) for (s, e) in final]
+
+    log.info(f"Face segments: {len(final)} segmentos em {duration:.1f}s "
+             f"-> {sum(e-s for s,e in final):.1f}s com face")
+    return final
+
+
+def _ffmpeg_extract_segment(input_path, start, end, out_path, is_video=True):
+    """Extrai trecho [start, end) de video OU audio."""
+    if is_video:
+        cmd = ["ffmpeg", "-y", "-ss", f"{start:.3f}", "-to", f"{end:.3f}",
+               "-i", input_path,
+               "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+               "-c:a", "aac", "-avoid_negative_ts", "make_zero",
+               out_path]
+    else:
+        cmd = ["ffmpeg", "-y", "-ss", f"{start:.3f}", "-to", f"{end:.3f}",
+               "-i", input_path,
+               "-ac", "1", "-ar", str(SR),
+               out_path]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if r.returncode != 0 or not os.path.exists(out_path):
+        log.warning(f"ffmpeg extract segment falhou: {r.stderr[-200:]}")
+        return None
+    return out_path
+
+
+def _ffmpeg_concat(video_parts, out_path):
+    """Concatena lista de mp4s sequencialmente. Usa concat demuxer."""
+    if not video_parts:
+        return None
+    list_file = out_path + ".txt"
+    with open(list_file, "w") as f:
+        for p in video_parts:
+            f.write(f"file '{os.path.abspath(p)}'\n")
+
+    # Tenta concat com -c copy (rapido, mas requer mesmo codec/params)
+    r = subprocess.run(
+        ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+         "-i", list_file, "-c", "copy", out_path],
+        capture_output=True, text=True, timeout=600,
+    )
+    if r.returncode != 0 or not _valid_mp4(out_path):
+        # Fallback: re-encoda pra padronizar codec
+        log.warning("Concat com -c copy falhou, re-encodando")
+        r2 = subprocess.run(
+            ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+             "-i", list_file,
+             "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+             "-c:a", "aac", out_path],
+            capture_output=True, text=True, timeout=1200,
+        )
+        if r2.returncode != 0 or not _valid_mp4(out_path):
+            log.error(f"Concat falhou: {r2.stderr[-300:]}")
+            try: os.remove(list_file)
+            except: pass
+            return None
+    try: os.remove(list_file)
+    except: pass
+    return out_path
+
+
+def run_lipsync_segmented(video, audio, out_dir, engine_fns=None):
+    """Estratégia segmentada:
+    1. Detecta segmentos do video onde face e visivel.
+    2. Aplica engine de lipsync (LatentSync, Wav2Lip) somente nesses segmentos.
+    3. Mantem frames sem face originais, trocando apenas o audio.
+    4. Concatena tudo em um video unico.
+
+    Util pra videos com cortes, narrator overlays, reactions, etc.
+    """
+    engine_fns = engine_fns or [_try_latentsync, _try_wav2lip]
+    out_final = os.path.join(out_dir, "lipsync_segmented.mp4")
+
+    duration = _get_video_duration(video)
+    if duration <= 0:
+        log.warning("Nao foi possivel ler duracao - cai pro fallback simples")
+        return None
+
+    face_segments = _detect_face_segments(video)
+    if not face_segments:
+        log.warning("Nenhum segmento com face detectado - cai pro audio swap")
+        return _ffmpeg_audio_swap(video, audio, out_final)
+
+    # Cobertura completa: intercala segmentos com_face com sem_face
+    full_timeline = []  # [(start, end, has_face), ...]
+    cursor = 0.0
+    for (start, end) in face_segments:
+        if start > cursor + 0.05:
+            full_timeline.append((cursor, start, False))
+        full_timeline.append((start, end, True))
+        cursor = end
+    if cursor < duration - 0.05:
+        full_timeline.append((cursor, duration, False))
+
+    parts_dir = os.path.join(out_dir, "_segments")
+    os.makedirs(parts_dir, exist_ok=True)
+    processed = []
+
+    for i, (start, end, has_face) in enumerate(full_timeline):
+        seg_video = os.path.join(parts_dir, f"seg_{i:03d}_in.mp4")
+        seg_audio = os.path.join(parts_dir, f"seg_{i:03d}_in.wav")
+
+        v_ok = _ffmpeg_extract_segment(video, start, end, seg_video, is_video=True)
+        a_ok = _ffmpeg_extract_segment(audio, start, end, seg_audio, is_video=False)
+
+        if not v_ok or not a_ok:
+            log.warning(f"Segmento {i} extract falhou - pulando")
+            continue
+
+        seg_out = os.path.join(parts_dir, f"seg_{i:03d}_out.mp4")
+
+        if has_face:
+            # Tenta cada engine ate funcionar
+            success_path = None
+            for engine in engine_fns:
+                try:
+                    result = engine(seg_video, seg_audio, seg_out)
+                    if result and _valid_mp4(result):
+                        success_path = result
+                        log.info(f"Segmento {i} ({start:.1f}-{end:.1f}s): {engine.__name__} OK")
+                        break
+                except Exception as e:
+                    log.warning(f"Segmento {i}: {engine.__name__} excecao: {e}")
+
+            if success_path:
+                processed.append(success_path)
+            else:
+                # Lipsync falhou neste segmento - troca so o audio
+                log.warning(f"Segmento {i} com face mas lipsync falhou - audio swap")
+                processed.append(_ffmpeg_audio_swap(seg_video, seg_audio, seg_out))
+        else:
+            # Sem face: so substitui audio
+            processed.append(_ffmpeg_audio_swap(seg_video, seg_audio, seg_out))
+
+    if not processed:
+        log.error("Nenhum segmento processado")
+        return None
+
+    log.info(f"Concatenando {len(processed)} segmentos")
+    result = _ffmpeg_concat(processed, out_final)
+
+    # Cleanup intermediario
+    try:
+        shutil.rmtree(parts_dir, ignore_errors=True)
+    except Exception:
+        pass
+
+    return result if result and _valid_mp4(result) else None
+
+
 def run_lipsync(video, audio, out_dir):
-    """Ordem: LatentSync -> Wav2Lip -> MuseTalk -> FFmpeg (so troca audio).
-    LatentSync (ByteDance, dez/2024) e o primario - mais robusto que MuseTalk/Wav2Lip.
+    """Ordem:
+    1. LatentSync (video inteiro, rapido)
+    2. Wav2Lip (video inteiro)
+    3. SEGMENTADO: detecta face por trecho, aplica lipsync so onde aparece rosto
+    4. FFmpeg audio swap (boca nao mexe)
+
+    A estrategia segmentada e crucial pra videos com cortes, narrator overlays
+    ou reactions - onde face nao aparece em todos os frames.
     """
     out = os.path.join(out_dir, "lipsync.mp4")
 
-    # 1. LatentSync - PRIMARIO (qualidade comparavel a APIs comerciais)
+    # 1. LatentSync direto (video inteiro)
     result = _try_latentsync(video, audio, out)
     if result:
         return result
 
-    # 2. Wav2Lip - estavel ha anos, fallback confiavel
+    # 2. Wav2Lip direto
     result = _try_wav2lip(video, audio, out)
     if result:
         return result
 
-    # 3. MuseTalk - se ainda estiver instalado
+    # 3. SEGMENTADO - tenta lipsync so nos trechos com face
+    log.info("Engines diretos falharam - tentando estrategia segmentada por face")
+    result = run_lipsync_segmented(video, audio, out_dir,
+                                    engine_fns=[_try_latentsync, _try_wav2lip])
+    if result:
+        log.info("Lipsync segmentado OK")
+        return result
+
+    # 4. MuseTalk - ultima tentativa antes do fallback puro
     result = _try_musetalk(video, audio, out)
     if result:
         return result
 
-    # 4. Ultimo recurso: troca audio sem mover boca
+    # 5. Ultimo recurso: troca audio sem mover boca
     log.warning("Todos os engines de lipsync falharam - apenas trocando audio (boca nao mexe)")
     return _ffmpeg_audio_swap(video, audio, out)
 

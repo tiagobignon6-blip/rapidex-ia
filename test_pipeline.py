@@ -213,7 +213,7 @@ def test_imports(report):
         import app
         report.add("app.py imports", "PASS", "")
         # Verifica functions criticas
-        for fn in ["step_transcribe", "step_generate_audio", "step_approve", "step_render"]:
+        for fn in ["step_transcribe", "step_generate_audio", "step_render"]:
             if hasattr(app, fn):
                 report.add(f"app.{fn} exists", "PASS", "")
             else:
@@ -570,40 +570,32 @@ def test_e2e_orchestration(report):
             ok, info = app._validate_audio(audio)
             assert ok, f"audio invalido: {info}"
             assert state.get("audio_preview") == audio
-            assert state.get("approved") is False
             report.add("step_generate_audio ponta-a-ponta", "PASS", info)
 
-            # 3. Tentar renderizar SEM aprovar - deve falhar
-            try:
-                app.step_render(False, state)
-                report.add("step_render bloqueia sem aprovacao", "FAIL", "deveria erro")
-                return False
-            except Exception as e:
-                if "Aprove" in str(e):
-                    report.add("step_render bloqueia sem aprovacao", "PASS", "")
-                else:
-                    report.add("step_render bloqueia sem aprovacao", "FAIL", str(e))
-
-            # 4. Aprovar
-            state, status, _ = app.step_approve(state)
-            assert state.get("approved") is True, "approved deveria ser True"
-            report.add("step_approve marca aprovado", "PASS", "")
-
-            # 5. Render sem lipsync (mais leve)
+            # 3. Render sem lipsync (UX simplificada - sem step de aprovacao)
             final, status = app.step_render(False, state)
             ok, info = app._validate_video(final)
             assert ok, f"video final invalido: {info}"
             report.add("step_render (sem lipsync) gera video", "PASS", info)
 
-            # 6. Render COM lipsync (usa fake_lipsync)
+            # 4. Render COM lipsync (usa fake_lipsync)
             # precisa novo state pq render limpa o tmp
             state2 = {}
             _, _, _, state2 = app.step_transcribe(video, "Ingles", "Portugues", state2)
             _, _, state2 = app.step_generate_audio(trans, None, state2)
-            state2, _, _ = app.step_approve(state2)
             final2, _ = app.step_render(True, state2)
             ok, info = app._validate_video(final2)
             report.add("step_render (com lipsync) gera video", "PASS" if ok else "FAIL", info)
+
+            # 5. Render bloqueia sem audio gerado
+            try:
+                app.step_render(False, {"tmp": "/tmp", "video": video})
+                report.add("step_render bloqueia sem audio gerado", "FAIL", "deveria erro")
+            except Exception as e:
+                if "Gere o audio" in str(e):
+                    report.add("step_render bloqueia sem audio gerado", "PASS", "")
+                else:
+                    report.add("step_render bloqueia sem audio gerado", "FAIL", str(e))
 
             # 7. Tentar gerar audio sem transcrever - deve falhar
             try:
@@ -707,27 +699,18 @@ def test_regenerate_audio_resets_approval(report):
             state = {}
             _, trans, _, state = app.step_transcribe(video, "Ingles", "Portugues", state)
             audio1, _, state = app.step_generate_audio(trans, None, state)
-            state, _, _ = app.step_approve(state)
-            assert state["approved"] is True
-            report.add("aprovar marca state.approved=True", "PASS", "")
+            assert state.get("audio_preview") == audio1
+            report.add("audio gerado e persistido no state", "PASS", "")
 
-            # Regenerar audio (novo texto)
+            # Regenerar audio (novo texto) - audio_preview do state deve refletir a nova chamada
             audio2, _, state = app.step_generate_audio("Texto editado pelo usuario", None, state)
-            assert state["approved"] is False, "approved deveria ter sido resetado"
-            report.add("regenerar audio reseta approved=False", "PASS", "")
+            assert state.get("audio_preview") == audio2
+            report.add("regenerar audio atualiza o preview no state", "PASS", "")
 
-            # Tentar render sem reaprovar - deve falhar
-            try:
-                app.step_render(False, state)
-                report.add("render bloqueia apos regenerar sem reaprovar", "FAIL", "")
-            except Exception as e:
-                report.add("render bloqueia apos regenerar sem reaprovar", "PASS", "")
-
-            # Reaprovar e renderizar
-            state, _, _ = app.step_approve(state)
+            # Renderizar normalmente apos regenerar
             final, _ = app.step_render(False, state)
             ok, info = app._validate_video(final)
-            report.add("reaprovar + render funciona", "PASS" if ok else "FAIL", info)
+            report.add("render apos regenerar audio funciona", "PASS" if ok else "FAIL", info)
             return True
     except Exception as e:
         report.add("regenerar audio", "FAIL", f"{type(e).__name__}: {e}")
@@ -899,12 +882,7 @@ def test_e2e_real_pipeline(report):
             report.add("[e2e] generate_audio REAL (gTTS fallback)", "PASS",
                        f"{info} ({t_audio:.1f}s)")
 
-            # 4. Approve
-            state, _, _ = app.step_approve(state)
-            assert state["approved"] is True
-            report.add("[e2e] approve", "PASS", "")
-
-            # 5. Render (sem lipsync - apenas troca de audio)
+            # 4. Render direto (UX simplificada, sem approve step)
             t0 = time.time()
             final, status = app.step_render(False, state)
             t_render = time.time() - t0

@@ -270,7 +270,7 @@ def step_generate_audio(translated_text, ref_audio, session_state, progress=gr.P
 
         return (
             mixed,
-            f"Audio gerado ({info}). Ouca o preview e clique em APROVAR para fazer o lipsync.",
+            f"Audio gerado ({info}). Ouca o preview e clique em DUBLAR VIDEO.",
             session_state,
         )
 
@@ -306,8 +306,10 @@ def step_approve(session_state):
 # ─────────────────────────────────────────
 
 def step_render(use_lipsync, session_state, progress=gr.Progress(track_tqdm=True)):
-    if not session_state or not session_state.get("approved"):
-        raise gr.Error("Aprove o audio antes de renderizar.")
+    """Renderiza o video final. Requer audio gerado em step_generate_audio.
+    Aprovacao manual: implicita ao clicar em DUBLAR VIDEO (UX simplificada)."""
+    if not session_state or not session_state.get("audio_preview"):
+        raise gr.Error("Gere o audio primeiro (clique em GERAR AUDIO).")
 
     tmp = session_state["tmp"]
     video = session_state["video"]
@@ -508,14 +510,13 @@ with gr.Blocks(**_BLOCKS_KWARGS) as app:
             )
             generate_status = gr.Textbox(label="Status do audio", interactive=False, lines=1)
 
-    # ── ETAPA 6+7+8+9: Aprovacao + Render Final ───────────────────────────────
+    # ── ETAPA 5: Render Final ─────────────────────────────────────────────────
     with gr.Row():
         with gr.Column(scale=2):
-            gr.HTML('<div class="card-title">04 - Aprovar Audio e Renderizar Video Final</div>')
+            gr.HTML('<div class="card-title">04 - Renderizar Video Final</div>')
             with gr.Row():
-                approve_btn = gr.Button("APROVAR AUDIO", variant="secondary", size="lg")
-                use_lipsync = gr.Checkbox(label="Sincronizar labios (MuseTalk/Wav2Lip)", value=True)
-                render_btn = gr.Button("DUBLAR VIDEO", variant="primary", size="lg", interactive=False)
+                use_lipsync = gr.Checkbox(label="Sincronizar labios (LatentSync/Wav2Lip)", value=True)
+                render_btn = gr.Button("DUBLAR VIDEO", variant="primary", size="lg")
             render_status = gr.Textbox(label="Status do render", interactive=False, lines=1)
             video_out = gr.Video(label="Video final dublado", height=320)
 
@@ -533,16 +534,6 @@ with gr.Blocks(**_BLOCKS_KWARGS) as app:
         inputs=[translated_out, ref_audio, session_state],
         outputs=[audio_preview, generate_status, session_state],
         show_progress=True,
-    ).then(
-        # Ao gerar audio novo, desabilita o render ate aprovar de novo
-        fn=lambda: gr.update(interactive=False),
-        outputs=[render_btn],
-    )
-
-    approve_btn.click(
-        fn=step_approve,
-        inputs=[session_state],
-        outputs=[session_state, render_status, render_btn],
     )
 
     render_btn.click(

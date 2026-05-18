@@ -96,24 +96,44 @@ def health_html():
 
 
 def _get_audio_duration(path):
-    """Retorna duracao em segundos via ffprobe. 0 em caso de erro."""
-    try:
-        r = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", path],
-            capture_output=True, text=True, timeout=15,
-        )
-        return float(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else 0.0
-    except Exception:
-        return 0.0
+    """Retorna duracao em segundos. Tenta varias estrategias do ffprobe."""
+    queries = [
+        # 1. Container format duration
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", path],
+        # 2. Primeiro stream de audio
+        ["ffprobe", "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", path],
+        # 3. Primeiro stream de video
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", path],
+    ]
+    for cmd in queries:
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            if r.returncode == 0:
+                raw = r.stdout.strip()
+                if raw and raw.lower() != "n/a":
+                    try:
+                        d = float(raw)
+                        if d > 0:
+                            return d
+                    except ValueError:
+                        pass
+        except Exception:
+            continue
+    return 0.0
 
 
 def _validate_audio(path, min_size=2_000, min_duration=0.5):
-    """Garante que o audio existe, nao esta vazio, tem duracao plausivel."""
+    """Audio: existe + tamanho + duracao. Duracao e estrita pra audio."""
     if not path or not os.path.exists(path):
         return False, "arquivo nao existe"
-    if os.path.getsize(path) < min_size:
-        return False, f"arquivo muito pequeno ({os.path.getsize(path)} bytes)"
+    size = os.path.getsize(path)
+    if size < min_size:
+        return False, f"arquivo muito pequeno ({size} bytes)"
     duration = _get_audio_duration(path)
     if duration < min_duration:
         return False, f"duracao invalida ({duration:.2f}s)"
@@ -121,15 +141,24 @@ def _validate_audio(path, min_size=2_000, min_duration=0.5):
 
 
 def _validate_video(path, min_size=5_000, min_duration=0.5):
-    """Garante que o video existe e e renderizavel."""
+    """Video: existe + tamanho. Duracao e best-effort - se ffprobe nao detectar,
+    aceita mesmo assim (alguns formatos so revelam duracao apos demuxing completo).
+    Se for arquivo realmente quebrado, extract_audio vai falhar com mensagem clara.
+    """
     if not path or not os.path.exists(path):
         return False, "arquivo nao existe"
-    if os.path.getsize(path) < min_size:
-        return False, f"arquivo muito pequeno ({os.path.getsize(path)} bytes)"
-    duration = _get_audio_duration(path)  # ffprobe funciona pra video tambem
+    size = os.path.getsize(path)
+    if size < min_size:
+        return False, f"arquivo muito pequeno ({size} bytes)"
+    duration = _get_audio_duration(path)
+    if duration <= 0:
+        log.warning(f"ffprobe nao conseguiu detectar duracao de {path} (size={size}) - prosseguindo, extract_audio validara")
+        return True, f"{size//1024}KB"
     if duration < min_duration:
-        return False, f"duracao invalida ({duration:.2f}s)"
+        return False, f"duracao muito curta ({duration:.2f}s)"
     return True, f"{duration:.1f}s"
+
+
 
 
 # ─────────────────────────────────────────
